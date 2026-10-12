@@ -5,6 +5,19 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [2026.10.12.2] - 2026-10-12
+
+### Added
+- **CPU use** slider for Similar pictures: how many pictures are read at once, from 1 CPU thread to all of them.
+  Default is a quarter of the threads (2 on an 8-thread laptop). It takes effect immediately, even mid-search, and is
+  remembered.
+
+### Fixed
+- Similar pictures overloaded the processor: it read 6 pictures at once and gave each one every CPU thread, so 144
+  threads fought over 24 and the machine ran hot. Each picture now runs on one thread, at below-normal priority. On an
+  i7-12900K the default went from 22.5 threads busy and 811 ms of CPU per picture (28 pictures a second) to 4.4
+  threads busy and 78 ms per picture (57 a second): twice as fast for a fifth of the load.
+
 ## [2026.10.12] - 2026-10-12
 
 ### Changed

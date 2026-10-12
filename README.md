@@ -34,8 +34,17 @@ sample picture is matched by Meta's **DINOv2** (small), which judges how picture
 place. A description is matched by OpenAI's **CLIP** (ViT-B/32), which connects words to pictures. The models are not
 in the installer: the first time you use this mode, the app asks, then downloads them once (137 MB, from this
 project's releases, checked against a pinned SHA-256) into `%LOCALAPPDATA%\FindAnything\ai`. After that it works
-offline and nothing about your pictures leaves your PC. Speed on a desktop CPU (i7-12900K) is about 75 pictures a
-second; a laptop is slower. **Remember fingerprints** (off by default) keeps each picture's fingerprint in
+offline and nothing about your pictures leaves your PC.
+
+**CPU use** sets how many pictures are read at once, one CPU thread each, from 1 (cool and quiet) to every thread. It
+starts at a quarter of them (2 on an 8-thread laptop), can be changed in the middle of a search, and the work always
+runs at below-normal priority so the PC stays responsive. Measured on an i7-12900K (24 threads), 58 pictures:
+
+| CPU use | Pictures a second | Threads busy on average | CPU time per picture |
+|---|---|---|---|
+| 1 | 10 | 0.8 | 86 ms |
+| 6 (default here) | 57 | 4.4 | 78 ms |
+| 24 | 100 | 17.9 | 179 ms | **Remember fingerprints** (off by default) keeps each picture's fingerprint in
 `%LOCALAPPDATA%\FindAnything\pictures` so repeat searches skip the work; turning it off deletes them.
 
 How well does it work? Measured on 22 photos of one dog and 242 unrelated pictures (photos of people and

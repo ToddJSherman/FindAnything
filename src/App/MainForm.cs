@@ -45,6 +45,8 @@ namespace FindAnything.App
         private readonly SkinButton pickSamples = new SkinButton("Pick samples", "", ButtonKind.Secondary);
         private readonly Chip clipCache = new Chip("Remember fingerprints", "\uE74E", true);
         private readonly Chip weaker = new Chip("Show weaker matches", "\uE890", true);
+        private readonly Slider cpuSlider = new Slider();
+        private Rectangle cpuLabelRect, cpuValueRect;
         private readonly Tabs modeTabs = new Tabs(new[] { "Search text", "Find keys", "Similar pictures", "Drive check" }, new[] { Theme.GSearch, "\uE192", "\uE8B9", "\uEDA2" });
         private int mode;                       // 0 search text, 1 find keys, 2 drive check, 3 similar pictures
         private PictureSearch picSearch;
@@ -221,6 +223,10 @@ namespace FindAnything.App
                     status.SetParts(parts.ToArray(), bold.ToArray());
                 }
             };
+            Tip(cpuSlider, "How hard Similar pictures works the processor.\nLeft: one CPU thread - cool and quiet, slower. Right: every thread - fastest, and the fans will know.\n" +
+                           "Takes effect at once, even during a search. The work always runs at low priority, so the PC stays responsive.");
+            cpuSlider.Scrolling += delegate { OnCpuSlider(); };
+            cpuSlider.Committed += delegate { OnCpuSlider(); settings.Set("PictureWorkers", CpuWorkers); };
             clipCache.CheckedChanged += delegate
             {
                 Clip.UseCache = clipCache.Checked;
@@ -276,7 +282,7 @@ namespace FindAnything.App
             {
                 findField, lookField, browseButton, aboutButton, modeTabs,
                 matchCase, wholeWord, wildcards, loose, inContents, inNames, insideDocs, utf16, ocr, onlyPics, ocrCache,
-                clipCache, weaker, kProduct, kLabeled, kPasswords, kTokens, kFinancial, filtersChip,
+                clipCache, weaker, cpuSlider, kProduct, kLabeled, kPasswords, kTokens, kFinancial, filtersChip,
                 types, excludeTypes, skipFolders, maxMb, threads
             });
             // Last in z-order: the Search button's glow sits under its neighbours instead of erasing their edges.
@@ -382,6 +388,16 @@ namespace FindAnything.App
                     x += cw + Theme.S(8);
                 }
             }
+            // Similar pictures: the CPU slider at the right end of the chip row
+            cpuSlider.Visible = mode == 3;
+            cpuLabelRect = cpuValueRect = Rectangle.Empty;
+            if (mode == 3)
+            {
+                int vw = Theme.S(92), sw = Theme.S(170), lw = Theme.Advance("CPU use", Theme.UiSemibold(13)) + Theme.S(4);
+                cpuValueRect = new Rectangle(R - vw, y, vw, Theme.S(32));
+                cpuSlider.Bounds = new Rectangle(cpuValueRect.Left - Theme.S(8) - sw, y, sw, Theme.S(32));
+                cpuLabelRect = new Rectangle(cpuSlider.Left - Theme.S(6) - lw, y, lw, Theme.S(32));
+            }
             y += Theme.S(32);
 
             // filters
@@ -413,6 +429,19 @@ namespace FindAnything.App
         }
 
         /// <summary>The tabs read Search text, Find keys, Similar pictures, Drive check; modes 2 and 3 swap places.</summary>
+        /// <summary>Pictures read at once (each on one CPU thread), from the CPU use slider: 1 .. every logical processor.</summary>
+        private int CpuWorkers
+        {
+            get { int n = Math.Max(1, Environment.ProcessorCount); return 1 + (int)Math.Round(cpuSlider.Value * (n - 1)); }
+            set { int n = Math.Max(1, Environment.ProcessorCount); cpuSlider.Value = n == 1 ? 1 : (Math.Max(1, Math.Min(n, value)) - 1) / (double)(n - 1); }
+        }
+
+        private void OnCpuSlider()
+        {
+            if (picSearch != null) picSearch.Workers = CpuWorkers;
+            hero.Invalidate(cpuValueRect);
+        }
+
         private static int TabToMode(int i) { return i == 2 ? 3 : i == 3 ? 2 : i; }
 
         private bool Busy { get { return job != null || driveScan != null || picSearch != null; } }
@@ -514,6 +543,12 @@ namespace FindAnything.App
             using (Pen p = new Pen(Theme.Line2))
                 for (int i = 0; i < separatorsX.Count; i++)
                     g.DrawLine(p, separatorsX[i], separatorsY[i] - Theme.S(10), separatorsX[i], separatorsY[i] + Theme.S(10));
+            if (!cpuLabelRect.IsEmpty)
+            {
+                TextRenderer.DrawText(g, "CPU use", Theme.UiSemibold(13), cpuLabelRect, Theme.Dim, Theme.Left);
+                int w = CpuWorkers, n = Environment.ProcessorCount;
+                TextRenderer.DrawText(g, w + " of " + n + (n == 1 ? " thread" : " threads"), Theme.Ui(13), cpuValueRect, Theme.Text, Theme.Right);
+            }
             foreach (KeyValuePair<string, Rectangle> kv in miniLabels)
                 TextRenderer.DrawText(g, Spaced(kv.Key.ToUpperInvariant()), Theme.UiSemibold(11.5f), kv.Value, Theme.Faint, Theme.Left);
         }
@@ -626,6 +661,8 @@ namespace FindAnything.App
             onlyPics.Checked = ocr.Checked && settings.GetBool("OnlyPictures", false);
             clipCache.Checked = settings.GetBool("PictureCache", false);
             weaker.Checked = settings.GetBool("ShowWeakerMatches", false);
+            // default: a quarter of the CPU threads (2 on an 8-thread laptop, 6 on a 24-thread desktop)
+            CpuWorkers = (int)settings.GetLong("PictureWorkers", Math.Max(1, Environment.ProcessorCount / 4));
             Clip.UseCache = clipCache.Checked;
             if (!clipCache.Checked) Clip.ClearCache();
             Ocr.UseCache = ocrCache.Checked;
@@ -658,6 +695,7 @@ namespace FindAnything.App
             settings.Set("OnlyPictures", onlyPics.Checked);
             settings.Set("PictureCache", clipCache.Checked);
             settings.Set("ShowWeakerMatches", weaker.Checked);
+            settings.Set("PictureWorkers", CpuWorkers);
             settings.Set("Keys.Product", kProduct.Checked);
             settings.Set("Keys.Labeled", kLabeled.Checked);
             settings.Set("Keys.Passwords", kPasswords.Checked);
@@ -1132,7 +1170,9 @@ namespace FindAnything.App
 
             List<string> skip = samples ?? new List<string>();
             Clip loaded = clip;
+            int workers = CpuWorkers;
             PictureSearch ps = new PictureSearch(roots, skipFolders.Text, skip);
+            ps.Workers = workers;
             picSearch = ps;
             cts = new CancellationTokenSource();
             CancellationToken token = cts.Token;
@@ -1140,7 +1180,7 @@ namespace FindAnything.App
             {
                 try
                 {
-                    if (loaded == null) loaded = new Clip(Environment.ProcessorCount);
+                    if (loaded == null) loaded = new Clip(1);   // one thread per picture; the slider sets how many at once
                     // A sample is matched by how it looks (DINOv2); a description by what is in the picture (CLIP).
                     List<float[]> queries = new List<float[]>();
                     Func<string, float[]> embed;
@@ -1154,7 +1194,7 @@ namespace FindAnything.App
                         embed = loaded.EmbedImage;
                         queries.Add(loaded.EmbedText(description));
                     }
-                    ps.Run(embed, queries, Math.Max(1, Environment.ProcessorCount / 4), token);
+                    ps.Run(embed, queries, workers, token);
                 }
                 catch (OperationCanceledException) { }
                 catch (Exception ex) { ps.Error = ex.Message; }

@@ -73,34 +73,54 @@ namespace FindAnything.Core
             }
             Interlocked.Exchange(ref Pictures, files.Count);
 
-            ParallelOptions po = new ParallelOptions();
-            po.MaxDegreeOfParallelism = Math.Max(1, threads);
-            po.CancellationToken = ct;
+            // One picture per thread (the model runs single-threaded inside each), on below-normal-priority threads so
+            // the rest of the PC stays smooth. Only the first Workers threads take pictures; the rest wait, so the CPU
+            // budget can be turned up or down while the search runs.
+            if (Workers < 1) Workers = Math.Max(1, threads);   // the window may already have set it (the slider)
+            int next = -1;
+            Thread[] pool = new Thread[Math.Max(1, Environment.ProcessorCount)];
+            for (int i = 0; i < pool.Length; i++)
+            {
+                int id = i;
+                pool[i] = new Thread(delegate()
+                {
+                    while (!ct.IsCancellationRequested)
+                    {
+                        if (Thread.VolatileRead(ref next) >= files.Count - 1) return;   // every picture is taken
+                        if (id >= Workers) { Thread.Sleep(150); continue; }
+                        int n = Interlocked.Increment(ref next);
+                        if (n >= files.Count) return;
+                        Score(files[n]);
+                    }
+                });
+                pool[i].IsBackground = true;
+                pool[i].Priority = ThreadPriority.BelowNormal;
+                pool[i].Start();
+            }
+            foreach (Thread t in pool) t.Join();
+        }
+
+        /// <summary>How many pictures are read at once (1 = lightest). Can change while the search runs.</summary>
+        public volatile int Workers;
+
+        private void Score(FileInfo f)
+        {
+            string path = LongPath.Strip(f.FullName);
             try
             {
-                Parallel.ForEach(files, po, delegate(FileInfo f)
-                {
-                    string path = LongPath.Strip(f.FullName);
-                    try
-                    {
-                        if (skipFiles.Contains(path)) return;
-                        float[] e = embed(f.FullName);
-                        FileHit h = new FileHit();
-                        h.IoPath = f.FullName; h.Path = path; h.Name = f.Name; h.Folder = LongPath.Strip(f.DirectoryName);
-                        h.Size = f.Length; h.Modified = f.LastWriteTime;
-                        h.Source = "SIMILAR";
-                        float best = -1;
-                        foreach (float[] q in queries) best = Math.Max(best, Clip.Similarity(q, e));
-                        h.Score = best;
-                        Hits.Enqueue(h);
-                    }
-                    catch (OperationCanceledException) { throw; }
-                    catch (Exception ex) { Note(path + ": " + ex.Message); }
-                    finally { Interlocked.Increment(ref Done); }
-                });
+                if (skipFiles.Contains(path)) return;
+                float[] e = embed(f.FullName);
+                FileHit h = new FileHit();
+                h.IoPath = f.FullName; h.Path = path; h.Name = f.Name; h.Folder = LongPath.Strip(f.DirectoryName);
+                h.Size = f.Length; h.Modified = f.LastWriteTime;
+                h.Source = "SIMILAR";
+                float best = -1;
+                foreach (float[] q in queries) best = Math.Max(best, Clip.Similarity(q, e));
+                h.Score = best;
+                Hits.Enqueue(h);
             }
-            catch (OperationCanceledException) { }
-            catch (AggregateException ae) { ae.Handle(delegate(Exception x) { return x is OperationCanceledException; }); }
+            catch (Exception ex) { Note(path + ": " + ex.Message); }
+            finally { Interlocked.Increment(ref Done); }
         }
 
         private void Note(string s)

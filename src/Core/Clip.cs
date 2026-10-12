@@ -160,7 +160,7 @@ namespace FindAnything.Core
             {
                 if (text == null)
                 {
-                    text = ort.Open(Path.Combine(Folder, "text_model_quantized.onnx"), Environment.ProcessorCount);
+                    text = ort.Open(Path.Combine(Folder, "text_model_quantized.onnx"), threads);
                     tokenizer = new ClipTokenizer(Path.Combine(Folder, "vocab.json"), Path.Combine(Folder, "merges.txt"));
                 }
             }

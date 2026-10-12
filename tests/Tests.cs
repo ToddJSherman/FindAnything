@@ -21,7 +21,8 @@ internal static class Tests
         LongPath.EnableInProcess();
 
         if (args.Length >= 3 && args[0] == "huge") return Huge(args[1], double.Parse(args[2]));
-        if (args.Length >= 3 && args[0] == "clip") return ClipRank(args[1], args[2], args.Length > 3 ? int.Parse(args[3]) : 30);
+        if (args.Length >= 3 && args[0] == "clip") return ClipRank(args[1], args[2], args.Length > 3 ? int.Parse(args[3]) : 30,
+            args.Length > 4 ? int.Parse(args[4]) : Math.Max(1, Environment.ProcessorCount / 4), args.Length > 5 ? int.Parse(args[5]) : 1);
         if (args.Length >= 3 && args[0] == "clipprep")
         {
             // tests.exe clipprep <picture> <out.png>: the 224x224 crop CLIP sees, to check orientation and cropping
@@ -648,11 +649,14 @@ internal static class Tests
         catch (Exception ex) { Check("drive: lists physical disks", false, ex.Message); }
     }
 
-    /// <summary>tests.exe clip <picture or "text:words"> <folder> [top]: ranks the folder's pictures, prints scores.</summary>
-    private static int ClipRank(string query, string folder, int top)
+    /// <summary>
+    /// tests.exe clip <picture or "text:words"> <folder> [top] [workers] [model threads]: ranks the folder's pictures,
+    /// prints scores, speed and CPU time per picture.
+    /// </summary>
+    private static int ClipRank(string query, string folder, int top, int workers, int modelThreads)
     {
         Stopwatch sw = Stopwatch.StartNew();
-        using (FindAnything.Core.Clip clip = new FindAnything.Core.Clip(Environment.ProcessorCount))
+        using (FindAnything.Core.Clip clip = new FindAnything.Core.Clip(modelThreads))
         {
             Console.WriteLine("model loaded in {0} ms", sw.ElapsedMilliseconds);
             sw.Restart();
@@ -664,8 +668,12 @@ internal static class Tests
             Console.WriteLine("query embedded in {0} ms", sw.ElapsedMilliseconds);
             PictureSearch ps = new PictureSearch(new List<string> { folder }, "", null);
             sw.Restart();
-            ps.Run(embed, qs, Math.Max(1, Environment.ProcessorCount / 4), None);
+            TimeSpan cpu0 = Process.GetCurrentProcess().TotalProcessorTime;
+            ps.Run(embed, qs, workers, None);
             double secs = sw.Elapsed.TotalSeconds;
+            double cpu = (Process.GetCurrentProcess().TotalProcessorTime - cpu0).TotalSeconds;
+            Console.WriteLine("workers {0}, model threads {1}: CPU {2:0.0} s = {3:0} ms per picture, {4:0.0} cores busy on average",
+                workers, modelThreads, cpu, 1000 * cpu / Math.Max(1, ps.Done), cpu / secs);
             List<FileHit> hits = new List<FileHit>(ps.Hits);
             hits.Sort(delegate(FileHit a, FileHit b) { return b.Score.CompareTo(a.Score); });
             Console.WriteLine("{0} pictures in {1:0.0} s ({2:0.0}/s), {3} errors", hits.Count, secs, hits.Count / secs, ps.ErrorCount);
