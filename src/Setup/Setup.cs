@@ -107,6 +107,7 @@ namespace FindAnything.Setup
             @"Software\Classes\Directory\shell\FindAnything",
             @"Software\Classes\Directory\Background\shell\FindAnything",
             @"Software\Classes\Drive\shell\FindAnything",
+            @"Software\Classes\SystemFileAssociations\image\shell\FindAnythingSimilar",   // right-click on a picture
         };
 
         public static string StartMenuShortcut
@@ -314,16 +315,18 @@ namespace FindAnything.Setup
 
         private static void AddExplorerMenu(string exe)
         {
-            string[] args = { "%1", "%V", "%1" };
+            string[] args = { "\"%1\"", "\"%V\"", "\"%1\"", "--similar \"%1\"" };
+            string here = AppInfo.Name + " here";
+            string[] labels = { here, here, here, "Find similar pictures" };
             for (int i = 0; i < MenuKeys.Length; i++)
             {
                 using (RegistryKey k = Registry.CurrentUser.CreateSubKey(MenuKeys[i]))
                 {
-                    k.SetValue("", AppInfo.Name + " here");
+                    k.SetValue("", labels[i]);
                     k.SetValue("Icon", "\"" + exe + "\",0");
                 }
                 using (RegistryKey c = Registry.CurrentUser.CreateSubKey(MenuKeys[i] + @"\command"))
-                    c.SetValue("", "\"" + exe + "\" \"" + args[i] + "\"");
+                    c.SetValue("", "\"" + exe + "\" " + args[i]);
             }
         }
 

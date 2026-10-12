@@ -31,8 +31,17 @@ namespace FindAnything.App
         private int dragStartY, dragStartTop;
         private bool hoverBar;
 
+        private readonly PreviewPopup popup = new PreviewPopup();
+        private readonly Timer hoverTimer = new Timer();
+        private int thumbHover = -1;     // row whose thumbnail the mouse is over
+
         private static readonly string[] Headers = { "File", "First match", "Hits", "Line", "Size", "Modified" };
+        private static readonly string[] SimilarHeaders = { "Picture", "How alike", "Rank", "", "Size", "Modified" };
         private int[] colX = new int[7];
+
+        /// <summary>Similar pictures: rows are ranked pictures; the bar spans ScoreLow..ScoreHigh of the list.</summary>
+        public bool Similar;
+        public float ScoreLow, ScoreHigh;
 
         public ResultsView()
         {
@@ -40,6 +49,39 @@ namespace FindAnything.App
                      ControlStyles.ResizeRedraw | ControlStyles.Selectable, true);
             BackColor = Theme.Bg;
             TabStop = true;
+            hoverTimer.Interval = 250;
+            hoverTimer.Tick += delegate
+            {
+                hoverTimer.Stop();
+                if (thumbHover < 0 || thumbHover >= Items.Count) return;
+                FileHit h = Items[thumbHover];
+                Rectangle tr = ThumbRect(thumbHover);
+                popup.ShowFor(h.Path, h.Name, RectangleToScreen(tr));
+            };
+        }
+
+        private static bool IsPicture(FileHit h) { return h.Source != "DISK" && Ocr.IsImage(h.Path); }
+
+        private int ThumbPx { get { return Theme.S(40); } }
+
+        /// <summary>The thumbnail square of a row, in this control's coordinates.</summary>
+        private Rectangle ThumbRect(int row)
+        {
+            int y = HeaderH + row * RowH - top;
+            return new Rectangle(colX[0] + 1, y + (RowH - ThumbPx) / 2, ThumbPx, ThumbPx);
+        }
+
+        private void HidePreview()
+        {
+            hoverTimer.Stop();
+            thumbHover = -1;
+            if (popup.Visible) popup.Hide();
+        }
+
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing) { hoverTimer.Dispose(); popup.Dispose(); }
+            base.Dispose(disposing);
         }
 
         private int HeaderH { get { return Theme.S(34); } }
@@ -177,7 +219,7 @@ namespace FindAnything.App
             for (int c = 0; c < 6; c++)
             {
                 bool right = c >= 2;
-                string label = Headers[c].ToUpperInvariant();
+                string label = (Similar ? SimilarHeaders : Headers)[c].ToUpperInvariant();
                 int x0 = colX[c], x1 = c == 5 ? colX[6] : (c == 1 ? colX[2] - Theme.S(10) : colX[c + 1] - Theme.S(10));
                 Color fg = c == SortColumn ? Theme.AmberHi : Theme.Faint;
                 Rectangle r = new Rectangle(x0, 0, x1 - x0, HeaderH);
@@ -216,13 +258,36 @@ namespace FindAnything.App
             if (i == focus && Focused && !sel)
                 using (Pen p = new Pen(Theme.Line2)) g.DrawRectangle(p, r.Left + 1, r.Top, r.Width - 3, r.Height - 2);
 
-            // badge + name + folder
+            // thumbnail (pictures) or type badge, then name + folder
             string ext = Badge(h);
+            bool pictureDrawn = false;
+            if (IsPicture(h))
+            {
+                Rectangle tr = new Rectangle(colX[0] + 1, r.Top + (r.Height - ThumbPx) / 2, ThumbPx, ThumbPx);
+                Bitmap thumb = Thumbs.Get(h.Path, ThumbPx, this);
+                if (thumb != null || !Thumbs.Failed(h.Path, ThumbPx))
+                {
+                    // Same square for every picture: fitted, proportions kept, the spare space neutral.
+                    Theme.FillRound(g, Theme.Bg2, tr, Theme.S(6));
+                    if (thumb != null)
+                    {
+                        GraphicsState gs = g.Save();
+                        using (GraphicsPath clip = Theme.Round(tr, Theme.S(6))) g.SetClip(clip, CombineMode.Intersect);
+                        Thumbs.DrawFitted(g, thumb, Rectangle.Inflate(tr, -Theme.S(1), -Theme.S(1)));
+                        g.Restore(gs);
+                    }
+                    Theme.StrokeRound(g, i == thumbHover ? Theme.AmberHi : Theme.Line2, tr, Theme.S(6), i == thumbHover ? Theme.S(1.5f) : 1);
+                    pictureDrawn = true;
+                }
+            }
             Color bf, bb;
             BadgeColors(ext, out bf, out bb);
             Rectangle badge = new Rectangle(colX[0], r.Top + (r.Height - Theme.S(24)) / 2, Theme.S(42), Theme.S(24));
-            Theme.FillRound(g, bb, badge, Theme.S(6));
-            TextRenderer.DrawText(g, ext, Theme.UiSemibold(ext.Length > 3 ? 9.5f : 10.5f), badge, bf, Theme.Center);
+            if (!pictureDrawn)
+            {
+                Theme.FillRound(g, bb, badge, Theme.S(6));
+                TextRenderer.DrawText(g, ext, Theme.UiSemibold(ext.Length > 3 ? 9.5f : 10.5f), badge, bf, Theme.Center);
+            }
             int nx = badge.Right + Theme.S(11);
             int nw = colX[1] - Theme.S(14) - nx;
             TextRenderer.DrawText(g, h.Name, Theme.UiSemibold(14), new Rectangle(nx, r.Top + Theme.S(7), nw, Theme.S(21)), Theme.Text, Theme.Left | TextFormatFlags.EndEllipsis);
@@ -230,7 +295,8 @@ namespace FindAnything.App
 
             // first match, with the hit highlighted
             Rectangle pr = new Rectangle(colX[1], r.Top, colX[2] - Theme.S(14) - colX[1], r.Height);
-            if (h.Secret != null) PaintSecret(g, h.Secret, pr);
+            if (h.Source == "SIMILAR") PaintLikeness(g, h, pr, sel);
+            else if (h.Secret != null) PaintSecret(g, h.Secret, pr);
             else if (h.ContentHits > 0 && !string.IsNullOrEmpty(h.Preview)) PaintPreview(g, h.Preview, pr, FindSpan != null ? FindSpan(h.Preview) : null);
             else if (h.NameMatch) TextRenderer.DrawText(g, "matched by file name", Theme.Ui(13, FontStyle.Italic), pr, Theme.Faint, Theme.Left);
 
@@ -253,6 +319,28 @@ namespace FindAnything.App
             if (!disk) TextRenderer.DrawText(g, Fmt.Size(h.Size), nf, new Rectangle(colX[4], r.Top, colX[5] - Theme.S(10) - colX[4], r.Height), Theme.Dim, Theme.Right);
             if (h.Modified != DateTime.MinValue)
                 TextRenderer.DrawText(g, h.Modified.ToString("yyyy-MM-dd  HH:mm"), nf, new Rectangle(colX[5], r.Top, colX[6] - colX[5], r.Height), Theme.Faint, Theme.Right);
+        }
+
+        /// <summary>A bar for how alike the picture is (relative to the rest of the list), then its rank.</summary>
+        private void PaintLikeness(Graphics g, FileHit h, Rectangle r, bool sel)
+        {
+            // at least 0.15 of spread, so a short list of near-equals is not drawn as full-versus-empty
+            float low = Math.Min(ScoreLow, ScoreHigh - 0.15f);
+            float f = (h.Score - low) / (ScoreHigh - low);
+            f = Math.Max(0.03f, Math.Min(1f, f));
+            int bw = Math.Min(Theme.S(220), r.Width - Theme.S(60));
+            Rectangle bar = new Rectangle(r.Left, r.Top + (r.Height - Theme.S(8)) / 2, Math.Max(Theme.S(40), bw), Theme.S(8));
+            Theme.FillRound(g, Theme.Line, bar, bar.Height / 2f);
+            Theme.FillRound(g, f > 0.66f ? Theme.AmberHi : f > 0.33f ? Theme.Amber : Theme.Dim, new Rectangle(bar.X, bar.Y, Math.Max(bar.Height, (int)(bar.Width * f)), bar.Height), bar.Height / 2f);
+            TextRenderer.DrawText(g, (h.Score * 100).ToString("0"), Theme.Ui(12.5f), new Rectangle(bar.Right + Theme.S(10), r.Top, Theme.S(50), r.Height), Theme.Faint, Theme.Left);
+
+            string n = "#" + h.FirstLine.ToString("N0");
+            Font pf = Theme.UiSemibold(12);
+            int pw = Math.Max(Theme.S(30), Theme.TextWidth(n, pf) + Theme.S(16));
+            Rectangle pill = new Rectangle(colX[3] - Theme.S(10) - pw, r.Top + (r.Height - Theme.S(22)) / 2, pw, Theme.S(22));
+            if (sel) Theme.FillRound(g, Theme.Amber, pill, pill.Height / 2f);
+            else { Theme.FillRound(g, Theme.Surface2, pill, pill.Height / 2f); Theme.StrokeRound(g, Theme.Line2, pill, pill.Height / 2f, 1); }
+            TextRenderer.DrawText(g, n, pf, pill, sel ? Theme.AmberInk : Theme.Text, Theme.Center);
         }
 
         private void PaintSecret(Graphics g, SecretFinding s, Rectangle r)
@@ -365,6 +453,7 @@ namespace FindAnything.App
 
         protected override void OnMouseWheel(MouseEventArgs e)
         {
+            HidePreview();
             top = Math.Max(0, Math.Min(MaxTop, top - e.Delta / 120 * RowH * 3));
             Invalidate();
             base.OnMouseWheel(e);
@@ -374,6 +463,7 @@ namespace FindAnything.App
 
         protected override void OnMouseDown(MouseEventArgs e)
         {
+            HidePreview();
             lastDown = e.Location;
             Focus();
             base.OnMouseDown(e);
@@ -432,6 +522,15 @@ namespace FindAnything.App
             }
             bool bar = BarTrack.Contains(e.Location) && !Thumb.IsEmpty;
             int row = bar ? -1 : RowAt(e.Y);
+            // Hovering a picture's thumbnail shows the big preview; leaving the thumbnail hides it.
+            int overThumb = row >= 0 && IsPicture(Items[row]) && ThumbRect(row).Contains(e.Location) ? row : -1;
+            if (overThumb != thumbHover)
+            {
+                HidePreview();
+                thumbHover = overThumb;
+                if (overThumb >= 0) hoverTimer.Start();
+                Invalidate();
+            }
             if (bar != hoverBar || row != hoverRow) { hoverBar = bar; hoverRow = row; Invalidate(); }
             Cursor = e.Y < HeaderH && ColAtHeader(e.X) >= 0 ? Cursors.Hand : Cursors.Default;
         }
@@ -445,6 +544,7 @@ namespace FindAnything.App
         protected override void OnMouseLeave(EventArgs e)
         {
             base.OnMouseLeave(e);
+            HidePreview();
             hoverRow = -1;
             hoverBar = false;
             Invalidate();
@@ -492,6 +592,7 @@ namespace FindAnything.App
 
         protected override void OnGotFocus(EventArgs e) { Invalidate(); base.OnGotFocus(e); }
         protected override void OnLostFocus(EventArgs e) { Invalidate(); base.OnLostFocus(e); }
+        protected override void OnVisibleChanged(EventArgs e) { if (!Visible) HidePreview(); base.OnVisibleChanged(e); }
         protected override void OnResize(EventArgs e) { top = Math.Min(top, MaxTop); base.OnResize(e); }
     }
 }

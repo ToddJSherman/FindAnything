@@ -65,6 +65,17 @@ namespace FindAnything.Core
 
         private static readonly string[] ImageExts = { ".jpg", ".jpeg", ".jfif", ".png", ".bmp", ".gif", ".tif", ".tiff", ".heic", ".heif", ".webp", ".jxr" };
 
+        /// <summary>File masks for every picture type OCR reads: "*.jpg;*.jpeg;...".</summary>
+        public static string PictureMasks
+        {
+            get
+            {
+                string[] m = new string[ImageExts.Length];
+                for (int i = 0; i < m.Length; i++) m[i] = "*" + ImageExts[i];
+                return string.Join(";", m);
+            }
+        }
+
         public static bool IsImage(string path)
         {
             string ext = Path.GetExtension(path).ToLowerInvariant();

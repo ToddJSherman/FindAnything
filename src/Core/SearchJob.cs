@@ -62,7 +62,7 @@ namespace FindAnything.Core
         {
             set = settings;
             if (!set.SecretsMode && !set.SearchContents && !set.SearchNames)
-                throw new ArgumentException("Pick at least one of: file contents, file names.");
+                throw new ArgumentException("Nothing to search: turn on Inside files, File names or Pictures (OCR).");
             if (set.SecretsMode) { }
             else if (set.SearchContents)
                 scanner = new Scanner(set.Text, set.CaseSensitive, set.Wildcards, set.WholeWord, set.Utf16, set.Loose);

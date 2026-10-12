@@ -21,6 +21,24 @@ internal static class Tests
         LongPath.EnableInProcess();
 
         if (args.Length >= 3 && args[0] == "huge") return Huge(args[1], double.Parse(args[2]));
+        if (args.Length >= 3 && args[0] == "clip") return ClipRank(args[1], args[2], args.Length > 3 ? int.Parse(args[3]) : 30);
+        if (args.Length >= 3 && args[0] == "clipprep")
+        {
+            // tests.exe clipprep <picture> <out.png>: the 224x224 crop CLIP sees, to check orientation and cropping
+            float[] px = FindAnything.Core.Clip.Preprocess(File.ReadAllBytes(args[1]));
+            float[] mean = { 0.48145466f, 0.4578275f, 0.40821073f }, std = { 0.26862954f, 0.26130258f, 0.27577711f };
+            using (Bitmap b = new Bitmap(224, 224))
+            {
+                for (int y = 0; y < 224; y++) for (int xx = 0; xx < 224; xx++)
+                {
+                    int[] c = new int[3];
+                    for (int ch = 0; ch < 3; ch++) c[ch] = Math.Max(0, Math.Min(255, (int)((px[ch * 224 * 224 + y * 224 + xx] * std[ch] + mean[ch]) * 255)));
+                    b.SetPixel(xx, y, Color.FromArgb(c[0], c[1], c[2]));
+                }
+                b.Save(args[2]);
+            }
+            return 0;
+        }
         if (args.Length >= 2 && args[0] == "ocr")
         {
             // tests.exe ocr <image or pdf>: what the app's OCR reads (no cache)
@@ -46,6 +64,7 @@ internal static class Tests
         SecretTests(work);
         OcrTests(work, args.Length >= 1 ? args[0] : null);
         DriveTests(work);
+        PictureTests(work);
 
         Console.WriteLine();
         Console.WriteLine("{0} passed, {1} failed", passed, failed);
@@ -554,6 +573,14 @@ internal static class Tests
         s.Ocr = true;
         List<FileHit> hits = RunJob(s);
         Check("ocr: job finds text in a picture", hits.Count == 1 && hits[0].Source == "OCR", Names(hits));
+        File.WriteAllText(Path.Combine(root, "notes.txt"), "6056 Flow in a text file");
+        s.IncludeMasks = Ocr.PictureMasks;   // the Only pictures toggle
+        List<FileHit> picsOnly = RunJob(s);
+        Check("ocr: only pictures skips other files", picsOnly.Count == 1 && picsOnly[0].Name == "IMG_2041.png", Names(picsOnly));
+        s.IncludeMasks = "";
+        Check("ocr: without the toggle the text file counts too", RunJob(s).Count == 2);
+        File.Delete(Path.Combine(root, "notes.txt"));
+
         s.Text = "H6056";
         s.Loose = true;
         Check("ocr + loose: model number despite the OCR misread", RunJob(s).Count == 1);
@@ -621,8 +648,93 @@ internal static class Tests
         catch (Exception ex) { Check("drive: lists physical disks", false, ex.Message); }
     }
 
-    // ------------------------------------------------------------------ huge file
+    /// <summary>tests.exe clip <picture or "text:words"> <folder> [top]: ranks the folder's pictures, prints scores.</summary>
+    private static int ClipRank(string query, string folder, int top)
+    {
+        Stopwatch sw = Stopwatch.StartNew();
+        using (FindAnything.Core.Clip clip = new FindAnything.Core.Clip(Environment.ProcessorCount))
+        {
+            Console.WriteLine("model loaded in {0} ms", sw.ElapsedMilliseconds);
+            sw.Restart();
+            float[] q;
+            if (query.StartsWith("text:")) q = clip.EmbedText(query.Substring(5));
+            else
+            {
+                // several sample pictures (separated by |): average their fingerprints
+                q = new float[FindAnything.Core.Clip.Dim];
+                foreach (string one in query.Split('|')) { float[] e1 = clip.EmbedImage(one); for (int k = 0; k < q.Length; k++) q[k] += e1[k]; }
+            }
+            Console.WriteLine("query embedded in {0} ms", sw.ElapsedMilliseconds);
+            PictureSearch ps = new PictureSearch(new List<string> { folder }, "", null);
+            sw.Restart();
+            ps.Run(clip, q, Math.Max(1, Environment.ProcessorCount / 4), None);
+            double secs = sw.Elapsed.TotalSeconds;
+            List<FileHit> hits = new List<FileHit>(ps.Hits);
+            hits.Sort(delegate(FileHit a, FileHit b) { return b.Score.CompareTo(a.Score); });
+            Console.WriteLine("{0} pictures in {1:0.0} s ({2:0.0}/s), {3} errors", hits.Count, secs, hits.Count / secs, ps.ErrorCount);
+            string e;
+            while (ps.Errors.TryDequeue(out e)) Console.WriteLine("  error: " + e);
+            for (int i = 0; i < hits.Count && i < top; i++) Console.WriteLine("{0,3}. {1:0.000}  {2}", i + 1, hits[i].Score, hits[i].Name);
+        }
+        return 0;
+    }
 
+    // ------------------------------------------------------------------ similar pictures
+
+    /// <summary>Needs the downloaded picture model; skipped (not failed) when it is not there.</summary>
+    private static void PictureTests(string work)
+    {
+        if (!FindAnything.Core.Clip.Installed) { Console.WriteLine("skip  similar pictures: the picture model is not downloaded"); return; }
+        ClipTokenizer tok = new ClipTokenizer(Path.Combine(FindAnything.Core.Clip.Folder, "vocab.json"), Path.Combine(FindAnything.Core.Clip.Folder, "merges.txt"));
+        long[] ids = tok.Encode("A photo of a dog.");
+        Check("pictures: tokenizer matches CLIP's ids", string.Join(",", ids) == "49406,320,1125,539,320,1929,269,49407", string.Join(",", ids));
+
+        string dir = Path.Combine(work, "similar");
+        Directory.CreateDirectory(Path.Combine(dir, "sub"));
+        string sample = Path.Combine(work, "sample.png");
+        Swatch(sample, Color.FromArgb(220, 30, 30), 3);
+        Swatch(Path.Combine(dir, "red.png"), Color.FromArgb(200, 40, 35), 7);
+        Swatch(Path.Combine(dir, "blue.png"), Color.FromArgb(30, 60, 220), 5);
+        Swatch(Path.Combine(dir, "sub", "green.jpg"), Color.FromArgb(40, 190, 60), 9);
+        File.WriteAllText(Path.Combine(dir, "notes.txt"), "not a picture");
+
+        using (FindAnything.Core.Clip clip = new FindAnything.Core.Clip(2))
+        {
+            PictureSearch ps = new PictureSearch(new List<string> { dir, sample }, "", new[] { sample });
+            ps.Run(clip, clip.EmbedImage(sample), 2, None);
+            List<FileHit> hits = Ranked(ps);
+            Check("pictures: every picture scored, the sample and text file left out", hits.Count == 3 && ps.Pictures == 4 && ps.ErrorCount == 0, hits.Count + "/" + ps.Pictures);
+            Check("pictures: the red one is most like the red sample", hits.Count > 0 && hits[0].Name == "red.png", hits.Count > 0 ? hits[0].Name : "");
+
+            ps = new PictureSearch(new List<string> { dir }, "", null);
+            ps.Run(clip, clip.EmbedText("a solid blue square"), 2, None);
+            hits = Ranked(ps);
+            Check("pictures: a description finds the blue one", hits.Count == 3 && hits[0].Name == "blue.png", hits.Count > 0 ? hits[0].Name : "");
+        }
+    }
+
+    private static List<FileHit> Ranked(PictureSearch ps)
+    {
+        List<FileHit> hits = new List<FileHit>(ps.Hits);
+        hits.Sort(delegate(FileHit a, FileHit b) { return b.Score.CompareTo(a.Score); });
+        return hits;
+    }
+
+    /// <summary>A coloured square with a lighter disc in it, so it is a picture rather than a flat fill.</summary>
+    private static void Swatch(string path, Color c, int seed)
+    {
+        using (Bitmap b = new Bitmap(320, 240))
+        using (Graphics g = Graphics.FromImage(b))
+        {
+            g.Clear(c);
+            Random r = new Random(seed);
+            using (SolidBrush light = new SolidBrush(Color.FromArgb(90, 255, 255, 255)))
+                g.FillEllipse(light, 60 + r.Next(80), 40 + r.Next(60), 120, 120);
+            b.Save(path, path.EndsWith(".jpg") ? System.Drawing.Imaging.ImageFormat.Jpeg : System.Drawing.Imaging.ImageFormat.Png);
+        }
+    }
+
+    // ------------------------------------------------------------------ huge file
     /// <summary>Creates a sparse file of the given size with the phrase near the end, then times a scan.</summary>
     private static int Huge(string path, double gb)
     {

@@ -5,6 +5,34 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [2026.10.11.7] - 2026-10-11
+
+### Added
+- **Similar pictures** mode: pick or drop one or more sample pictures, or describe what is in them ("a dog in a
+  costume"), and every picture under the folder is ranked by how alike it is, with a bar and a rank. Uses OpenAI's
+  CLIP (ViT-B/32, 8-bit) through Microsoft ONNX Runtime 1.20.1 on the CPU, called through its C API (no managed
+  package). About 40 pictures a second on an i7-12900K. Pictures are read upright (EXIF) and centre-cropped as CLIP
+  expects.
+- The picture model is an optional, one-time 117 MB download from this project's releases, only after the user agrees,
+  checked against a pinned SHA-256 and unpacked to `%LOCALAPPDATA%\FindAnything\ai`. ONNX Runtime's usage events are
+  turned off.
+- **Remember fingerprints** toggle (off by default, same rules as Remember OCR text): keeps each picture's fingerprint
+  in `%LOCALAPPDATA%\FindAnything\pictures`; turning it off deletes them.
+- **Find similar pictures** on the results' right-click menu, on Explorer's right-click menu for pictures (installer
+  and `tools\explorer-menu.ps1`), and as `FindAnything.exe --similar <picture>`.
+- Tests: CLIP tokenizer ids, ranking by a sample picture and by a description (skipped when the model is absent).
+- **Only pictures** toggle next to Pictures (OCR): one click limits a search to picture files (JPG, PNG, HEIC, WebP, GIF,
+  BMP, TIFF) and turns OCR on. Also a "Pictures" preset under File types.
+- Picture results show a thumbnail. Hovering it pops up a large preview with the file name and real pixel size, and it
+  disappears when the pointer leaves. Every picture, 64 px or 8000 px, gets the same box with its proportions kept;
+  tiny ones scale up with crisp pixels. Thumbnails come from Windows' own thumbnail service (fast, cached by Windows,
+  upright, any installed codec).
+
+### Fixed
+- Searching pictures with **Inside files** and **File names** both off refused to run ("Pick at least one of..."). Reading
+  pictures is now its own source: Only pictures works whatever Inside files is set to, and OCR alone searches the pictures.
+- "1 files searched" is now "1 file searched".
+
 ## [2026.10.11.6] - 2026-10-11
 
 ### Added

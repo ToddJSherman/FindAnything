@@ -4,13 +4,14 @@ A Windows app that finds text inside files. Point it at a folder or a whole driv
 list of every file that contains it. Double-click a file to open it with every match highlighted, even when the
 file is 25 GB.
 
-Everything runs on your PC. Nothing goes online.
+Everything runs on your PC. Nothing goes online, except one optional download you are asked about first: the picture
+model for Similar pictures.
 
 ![Find Anything: search results with the match highlighted in each file](docs/screenshot-main.png)
 
 ![The viewer: any file size, every match highlighted](docs/screenshot-viewer.png)
 
-## Three modes
+## Four modes
 
 **Search text** finds any text inside any file, with the extras below.
 
@@ -20,6 +21,24 @@ own row; right-click it and choose **Copy the key**. Type a word to narrow the l
 
 ![Find keys: product keys, serials, passwords and tokens, including one read off a photo](docs/screenshot-keys.png)
 
+**Similar pictures** finds photos by what is in them. Pick (or drop) a sample picture, or several of the same thing,
+and every picture in the folder is ranked by how alike it looks. Or describe it instead: `a dog in a costume`,
+`a receipt`, `the beach at sunset`. Right-click any picture result, or a picture in Explorer, and choose **Find similar
+pictures**.
+
+![Similar pictures: Windows wallpapers ranked for "a lake with mountains"](docs/screenshot-similar.png)
+
+It uses OpenAI's CLIP model (ViT-B/32, 8-bit) through Microsoft's ONNX Runtime, on the CPU, so it needs no graphics
+card. The model is not in the installer: the first time you use this mode, the app asks, then downloads it once
+(117 MB, from this project's releases, checked against a pinned SHA-256) into `%LOCALAPPDATA%\FindAnything\ai`. After
+that it works offline and nothing about your pictures leaves your PC. Speed on a desktop CPU (i7-12900K) is about 40
+pictures a second; a laptop is slower. **Remember fingerprints** (off by default) keeps each picture's 512-number
+fingerprint in `%LOCALAPPDATA%\FindAnything\pictures` so repeat searches skip the work; turning it off deletes them.
+
+How well does it work? Tested with 19 photos of one dog scattered through folders among 48 other pictures (20 other
+dogs, many of the same breed, and 28 Windows wallpapers): one sample photo, not in the set, put all 19 in the top 27.
+The 8 others in that stretch were all dogs, 7 of them the same breed. It finds "this kind of picture" very well; telling one dog from its look-alike is harder.
+
 **Drive check** reads a whole drive, every sector and read-only, before you sell or give it away. It tells you how
 much of the drive still holds data (a wiped drive is all zeros) and lists every place a text of yours still appears,
 including inside deleted files. It needs administrator rights; the app offers to restart with them.
@@ -28,7 +47,9 @@ including inside deleted files. It needs administrator rights; the app offers to
 
 ## Text in pictures
 
-Turn on **Pictures (OCR)** and the text in photos, screenshots and scanned PDFs becomes searchable. It uses the OCR
+Turn on **Pictures (OCR)** and the text in photos, screenshots and scanned PDFs becomes searchable. Add **Only pictures**
+to skip everything that is not a picture, which is handy for a whole Pictures folder. Picture results show a thumbnail;
+hover over it for a large preview. It uses the OCR
 engine built into Windows 10/11, so nothing leaves your PC. Open a picture and the match is boxed on the photo itself.
 
 By default nothing OCR reads is kept: pictures are read again on every search. Turn on **Remember OCR text** to keep it
@@ -45,8 +66,8 @@ OCR makes mistakes: it can read an H as `1-1` or an m as `rn`. Turn on **Loose**
 2. Run it and click **Install**. It installs for your user only, so it needs no admin rights. You can choose:
    - a Start menu shortcut, with **Ctrl+Alt+F** to open the app from anywhere
    - a desktop shortcut
-   - **Find Anything here** on Explorer's right-click menu for folders and drives. On Windows 11 it is under
-     *Show more options*.
+   - **Find Anything here** on Explorer's right-click menu for folders and drives, and **Find similar pictures** for
+     pictures. On Windows 11 they are under *Show more options*.
 3. To remove it, use **Settings > Apps > Installed apps > Find Anything > Uninstall**.
 
 The files are not code-signed, so Windows SmartScreen may say it "protected your PC". Click **More info**, then
@@ -93,12 +114,12 @@ Nothing is ever loaded whole.
 | Double-click or Enter on a result | Open it in the viewer with matches highlighted |
 | Right-click a result | Open with its usual program, open in Notepad++ at the line, show in folder, copy path, save the list as CSV |
 | Click a column header | Sort by it |
-| Drop a folder on the window | Set *Look in* |
+| Drop a folder on the window | Set *Look in* (in Similar pictures, dropped pictures become the samples) |
 | `C:\;D:\` in *Look in*, or pick `(all drives)` | Search several places |
 | *notes* link in the status bar | See locked files, access-denied folders, password-protected or scanned PDFs |
 
 **Right-click menu.** `tools\explorer-menu.ps1` adds **Find Anything here** to Explorer's right-click menu for
-folders, for empty space inside a folder, and for drives. It is per-user, so no admin is needed. On Windows 11 it is
+folders, for empty space inside a folder, and for drives, and **Find similar pictures** for picture files. It is per-user, so no admin is needed. On Windows 11 it is
 under **Show more options** (or Shift+F10). `-Uninstall` removes it.
 
 ```
@@ -107,6 +128,7 @@ powershell -ExecutionPolicy Bypass -File tools\explorer-menu.ps1
 
 Command line: `FindAnything.exe "D:\Some folder"` starts with *Look in* set.
 `FindAnything.exe --view <file> --find <text>` opens only the viewer.
+`FindAnything.exe --similar <picture>` searches the picture's folder for pictures like it.
 
 Settings live in `%APPDATA%\FindAnything\settings.txt`, one plain-text `key=value` per line: only toggles and filters.
 What you type (searches, folders) is never saved.
@@ -128,12 +150,13 @@ skipped.
 ```
 src/Core/   search engine: BytePattern (wildcard matcher), Scanner (streaming), SearchJob (folders, threads),
             DocText (Office/ODF), PdfDoc + PdfText + PdfLexer (PDF reader), LongPath,
-            Secrets (key/serial/password detectors), Ocr (Windows OCR + cache), RawDisk (drive check)
+            Secrets (key/serial/password detectors), Ocr (Windows OCR + cache), RawDisk (drive check),
+            Ort (ONNX Runtime C API by P/Invoke), Clip (picture/text fingerprints, CLIP tokenizer), PictureSearch
 src/App/    window, results list, viewer, About box; Skin.cs (theme, 9-sliced sprites, custom controls); skin/*.png
 src/Setup/  installer and uninstaller (one exe; the app and LICENSE are embedded in it)
 src/AppInfo.cs  version, credits and file details shared by both exes
 tools/      explorer-menu.ps1 (right-click menu for a copy run without the installer)
-tests/      Tests.cs (123 checks), make_pdfs.py (test PDFs from PyMuPDF and reportlab)
+tests/      Tests.cs (131 checks), make_pdfs.py (test PDFs from PyMuPDF and reportlab)
 design/     icon concepts, the app icon source (SVG), and the UI design (ui/main.html mockup, ui/sprites.html skin)
 docs/       README screenshots
 ```
@@ -147,12 +170,19 @@ docs/       README screenshots
 - OCR needs a Windows language with text recognition (English has it). OCR reads up to 40 pages of a scanned PDF.
 - Find keys works by patterns, so it can miss a key written in an unusual way and list a code that only looks like a key.
 - A crypto-erased drive can read as random data, so Drive check reports it as holding data even though it is wiped.
+- Similar pictures ranks by overall look and content, not identity: other dogs of the same breed, or another beach,
+  can rank close to yours. Several sample pictures help. Descriptions work best in plain English.
 
 ## Credits
 
 Created by **Todd J Sherman** ([@ToddJSherman](https://github.com/ToddJSherman)).
 
 The search engine, PDF reader, viewer and installer are written from scratch in C#, with no third-party libraries.
+The optional Similar pictures download contains third-party files, unchanged and under their own MIT licenses (their
+license texts are in the download): Microsoft [ONNX Runtime](https://github.com/microsoft/onnxruntime) 1.20.1 and
+OpenAI [CLIP](https://github.com/openai/CLIP) ViT-B/32 in the 8-bit ONNX export by
+[Xenova](https://huggingface.co/Xenova/clip-vit-base-patch32). The app calls ONNX Runtime's C API directly and turns
+its usage events off.
 The look was designed in HTML/CSS (`design/ui/main.html`). `tools/make-skin.ps1` renders its controls and cuts them into
 the PNG sprites the app draws, so the app matches the design.
 

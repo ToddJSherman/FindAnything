@@ -30,6 +30,9 @@ namespace FindAnything.Core
         /// <summary>Keys mode: the key, serial, password or token this row is about.</summary>
         public SecretFinding Secret;
 
+        /// <summary>Similar pictures: how close this picture is to the sample or description (cosine, -1..1).</summary>
+        public float Score;
+
         public string HitsText
         {
             get { return ContentHits == 0 ? "" : (HitsCapped ? ContentHits + "+" : ContentHits.ToString()); }
