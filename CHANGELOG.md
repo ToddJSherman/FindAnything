@@ -5,6 +5,29 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [2026.10.12.5] - 2026-10-12
+
+### Added
+- **Deleted files** tab: reads an NTFS drive's file table directly (read-only) and lists deleted files with their
+  original folder and whether they can still be recovered (intact, partly overwritten, overwritten, or erased - reads as
+  zeros after SSD TRIM), plus the Recycle Bin. Preview opens a private temporary copy (deleted on exit). Recover asks for
+  a folder once per session, warns when it is on the same drive, then recovers in one click. Tested on a real NTFS
+  volume: recovered files were byte-identical. Needs administrator rights.
+- **Sensitive data** tab (replaces Find keys): a security sweep with a severity (high / medium / low) and one line of
+  what to do for each finding; credential files found by what they are (SSH/PuTTY keys, `.env`, Git/AWS/Azure
+  credentials, registry logins, certificates, keystores, VPN/RDP files, vaults, wallets); one level worse in a
+  cloud-synced folder; values masked on screen and in CSV exports unless **Show values** is on.
+- Similar pictures: **sample pictures and words together** - look-alikes of the samples, ranked by the words.
+  Samples now sit behind the Pick samples button (add, change, clear) instead of in the search box.
+- Bulk actions: **Copy / Move (N) to a folder...**, **Copy (N) to "last folder"** in one click, **Copy files**
+  (Ctrl+Shift+C) to paste in Explorer, **Select all**, and dragging selected rows out to Explorer or any app. Nothing
+  is overwritten (" (2)" is added).
+
+### Fixed
+- Switching tabs carried the search box along (a picture path from Similar pictures ended up in the keys filter). Each
+  tab now keeps its own.
+- Five tabs fit at the smallest window size: the tabs drop their icons, then About its word, when space runs out.
+
 ## [2026.10.12.4] - 2026-10-12
 
 ### Changed

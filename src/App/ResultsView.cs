@@ -37,6 +37,10 @@ namespace FindAnything.App
 
         private static readonly string[] Headers = { "File", "First match", "Hits", "Line", "Size", "Modified" };
         private static readonly string[] SimilarHeaders = { "Picture", "How alike", "Rank", "", "Size", "Modified" };
+        private static readonly string[] DeletedHeaders = { "Deleted file", "Can it be recovered?", "", "", "Size", "Modified" };
+
+        /// <summary>Deleted files tab: rows are deleted files (DELETED) or Recycle Bin items (RECYCLE BIN).</summary>
+        public bool Deleted;
         private int[] colX = new int[7];
 
         /// <summary>Similar pictures: rows are ranked pictures; the bar spans ScoreLow..ScoreHigh of the list.</summary>
@@ -87,11 +91,14 @@ namespace FindAnything.App
                 if (thumbHover < 0 || thumbHover >= Items.Count) return;
                 FileHit h = Items[thumbHover];
                 Rectangle tr = ThumbRect(thumbHover);
-                popup.ShowFor(h.Path, h.Name, RectangleToScreen(tr));
+                popup.ShowFor(ThumbSource(h), h.Name, RectangleToScreen(tr));
             };
         }
 
-        private static bool IsPicture(FileHit h) { return h.Source != "DISK" && Ocr.IsImage(h.Path); }
+        private static bool IsPicture(FileHit h) { return h.Source != "DISK" && h.Source != "DELETED" && Ocr.IsImage(h.Path); }
+
+        /// <summary>The file to take a thumbnail from: a Recycle Bin item is read from where the bin keeps it.</summary>
+        private static string ThumbSource(FileHit h) { return h.Source == "RECYCLE BIN" ? LongPath.Strip(h.IoPath) : h.Path; }
 
         private int ThumbPx { get { return Theme.S(40); } }
 
@@ -288,7 +295,7 @@ namespace FindAnything.App
             for (int c = 0; c < 6; c++)
             {
                 bool right = c >= 2;
-                string label = (Similar ? SimilarHeaders : Headers)[c].ToUpperInvariant();
+                string label = (Deleted ? DeletedHeaders : Similar ? SimilarHeaders : Headers)[c].ToUpperInvariant();
                 int x0 = colX[c], x1 = c == 5 ? colX[6] : (c == 1 ? colX[2] - Theme.S(10) : colX[c + 1] - Theme.S(10));
                 Color fg = c == SortColumn ? Theme.AmberHi : Theme.Faint;
                 Rectangle r = new Rectangle(x0, 0, x1 - x0, HeaderH);
@@ -333,8 +340,8 @@ namespace FindAnything.App
             if (IsPicture(h))
             {
                 Rectangle tr = new Rectangle(colX[0] + 1, r.Top + (r.Height - ThumbPx) / 2, ThumbPx, ThumbPx);
-                Bitmap thumb = Thumbs.Get(h.Path, ThumbPx, this);
-                if (thumb != null || !Thumbs.Failed(h.Path, ThumbPx))
+                Bitmap thumb = Thumbs.Get(ThumbSource(h), ThumbPx, this);
+                if (thumb != null || !Thumbs.Failed(ThumbSource(h), ThumbPx))
                 {
                     // Same square for every picture: fitted, proportions kept, the spare space neutral.
                     Theme.FillRound(g, Theme.Bg2, tr, Theme.S(6));
@@ -367,6 +374,7 @@ namespace FindAnything.App
             // first match, with the hit highlighted
             Rectangle pr = new Rectangle(colX[1], r.Top, colX[2] - Theme.S(14) - colX[1], r.Height);
             if (h.Source == "SIMILAR") PaintLikeness(g, h, pr, sel);
+            else if (h.Source == "DELETED" || h.Source == "RECYCLE BIN") PaintRecovery(g, h, pr);
             else if (h.Secret != null) PaintSecret(g, h.Secret, pr);
             else if (h.ContentHits > 0 && !string.IsNullOrEmpty(h.Preview)) PaintPreview(g, h.Preview, pr, FindSpan != null ? FindSpan(h.Preview) : null);
             else if (h.NameMatch) TextRenderer.DrawText(g, "matched by file name", Theme.Ui(13, FontStyle.Italic), pr, Theme.Faint, Theme.Left);
@@ -385,7 +393,7 @@ namespace FindAnything.App
 
             Font nf = Theme.Ui(12.5f);
             bool disk = h.Source == "DISK";
-            if (h.ContentHits > 0 && !disk)
+            if (h.ContentHits > 0 && !disk && h.FirstLine > 0)
                 TextRenderer.DrawText(g, h.FirstLine.ToString("N0"), nf, new Rectangle(colX[3], r.Top, colX[4] - Theme.S(10) - colX[3], r.Height), Theme.Dim, Theme.Right);
             if (!disk) TextRenderer.DrawText(g, Fmt.Size(h.Size), nf, new Rectangle(colX[4], r.Top, colX[5] - Theme.S(10) - colX[4], r.Height), Theme.Dim, Theme.Right);
             if (h.Modified != DateTime.MinValue)
@@ -395,6 +403,11 @@ namespace FindAnything.App
         /// <summary>A bar for how alike the picture is (relative to the rest of the list), then its rank.</summary>
         private void PaintLikeness(Graphics g, FileHit h, Rectangle r, bool sel)
         {
+            if (h.Weak)
+            {
+                TextRenderer.DrawText(g, "not alike  (" + (h.Look * 100).ToString("0") + ")", Theme.Ui(12.5f, FontStyle.Italic), r, Theme.Faint, Theme.Left);
+                return;
+            }
             // at least 0.15 of spread, so a short list of near-equals is not drawn as full-versus-empty
             float low = Math.Min(ScoreLow, ScoreHigh - 0.15f);
             float f = (h.Score - low) / (ScoreHigh - low);
@@ -414,17 +427,71 @@ namespace FindAnything.App
             TextRenderer.DrawText(g, n, pf, pill, sel ? Theme.AmberInk : Theme.Text, Theme.Center);
         }
 
+        /// <summary>Sensitive data: show secret values in full (off = masked, safe for screenshots).</summary>
+        public bool ShowSecrets;
+
+        public static string Mask(string v)
+        {
+            if (string.IsNullOrEmpty(v)) return v;
+            if (v.Length <= 4) return new string('\u2022', 4);
+            return v.Substring(0, 2) + new string('\u2022', Math.Min(8, v.Length - 4)) + v.Substring(v.Length - 2);
+        }
+
+        /// <summary>Deleted files: can it come back? A pill, and a line saying why.</summary>
+        private void PaintRecovery(Graphics g, FileHit h, Rectangle r)
+        {
+            string pill, why;
+            Color c;
+            DeletedFile f = h.Tag as DeletedFile;
+            if (h.Source == "RECYCLE BIN") { pill = "IN THE RECYCLE BIN"; c = Color.FromArgb(141, 184, 255); why = "Deleted " + h.Modified.ToString("yyyy-MM-dd HH:mm") + ": fully recoverable."; }
+            else if (h.Weak) { pill = "ERASED"; c = Color.FromArgb(255, 107, 107); why = "Reads as zeros: the SSD has wiped it (TRIM). Not recoverable."; }
+            else if (f != null && f.Chance == 2) { pill = "RECOVERABLE"; c = Theme.Green; why = f.Resident != null ? "Small file kept inside the file table: intact." : "Its space has not been reused: intact."; }
+            else if (f != null && f.Chance == 1) { pill = "PARTLY OVERWRITTEN"; c = Theme.Amber; why = (100 * f.ClustersInUse / Math.Max(1, f.ClustersTotal)) + "% of its space now belongs to other files: it may not open."; }
+            else { pill = "OVERWRITTEN"; c = Color.FromArgb(255, 107, 107); why = "Its space has been reused by other files."; }
+            Font kf = Theme.UiSemibold(10.5f);
+            int kw = Theme.TextWidth(pill, kf) + Theme.S(16);
+            Rectangle p = new Rectangle(r.Left, r.Top + Theme.S(6), kw, Theme.S(20));
+            Theme.FillRound(g, Color.FromArgb(40, c), p, Theme.S(6));
+            TextRenderer.DrawText(g, pill, kf, p, c, Theme.Center);
+            TextRenderer.DrawText(g, why, Theme.Ui(11.5f), new Rectangle(r.Left + Theme.S(1), r.Top + Theme.S(29), r.Width, Theme.S(18)), Theme.Faint,
+                Theme.Left | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
+        }
+
         private void PaintSecret(Graphics g, SecretFinding s, Rectangle r)
         {
-            string kind = (s.Label ?? SecretDetector.KindName(s.Kind)).ToUpperInvariant();
+            // first line: severity, kind, the line with the value; second line: what to do about it
+            bool advice = !string.IsNullOrEmpty(s.Advice);
+            Rectangle top = advice ? new Rectangle(r.Left, r.Top + Theme.S(3), r.Width, Theme.S(26)) : r;
+            int x = r.Left;
             Font kf = Theme.UiSemibold(10.5f);
+            if (s.Severity > 0)
+            {
+                string sv = s.Severity >= 3 ? "HIGH" : s.Severity == 2 ? "MED" : "LOW";
+                Color sc = s.Severity >= 3 ? Color.FromArgb(255, 107, 107) : s.Severity == 2 ? Theme.Amber : Theme.Dim;
+                Rectangle sp = new Rectangle(x, top.Top + (top.Height - Theme.S(20)) / 2, Theme.S(44), Theme.S(20));
+                Theme.FillRound(g, Color.FromArgb(s.Severity >= 2 ? 200 : 60, sc), sp, Theme.S(5));
+                TextRenderer.DrawText(g, sv, kf, sp, s.Severity >= 2 ? Theme.Bg : Theme.Text, Theme.Center);
+                x = sp.Right + Theme.S(6);
+            }
+            string kind = (s.Label ?? SecretDetector.KindName(s.Kind)).ToUpperInvariant();
             int kw = Theme.TextWidth(kind, kf) + Theme.S(16);
-            Rectangle pill = new Rectangle(r.Left, r.Top + (r.Height - Theme.S(22)) / 2, kw, Theme.S(22));
+            Rectangle pill = new Rectangle(x, top.Top + (top.Height - Theme.S(20)) / 2, kw, Theme.S(20));
             Color c = KindColor(s.Kind);
             Theme.FillRound(g, Color.FromArgb(38, c), pill, Theme.S(6));
             TextRenderer.DrawText(g, kind, kf, pill, c, Theme.Center);
-            Rectangle rest = new Rectangle(pill.Right + Theme.S(10), r.Top, Math.Max(0, r.Right - pill.Right - Theme.S(10)), r.Height);
-            PaintPreview(g, s.Line, rest, new[] { s.ValueStart, s.Value.Length });
+            Rectangle rest = new Rectangle(pill.Right + Theme.S(10), top.Top, Math.Max(0, r.Right - pill.Right - Theme.S(10)), top.Height);
+            string line = s.Line;
+            int len = s.Value.Length;
+            if (!ShowSecrets && s.Kind != SecretKind.CredentialFile && s.ValueStart >= 0 && s.ValueStart + s.Value.Length <= line.Length)
+            {
+                string m = Mask(s.Value);
+                line = line.Substring(0, s.ValueStart) + m + line.Substring(s.ValueStart + s.Value.Length);
+                len = m.Length;
+            }
+            PaintPreview(g, line, rest, new[] { s.ValueStart, len });
+            if (advice)
+                TextRenderer.DrawText(g, s.Advice, Theme.Ui(11.5f), new Rectangle(r.Left + Theme.S(1), r.Top + Theme.S(29), r.Width, Theme.S(18)), Theme.Faint,
+                    Theme.Left | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
         }
 
         private static Color KindColor(SecretKind k)
@@ -432,7 +499,7 @@ namespace FindAnything.App
             switch (k)
             {
                 case SecretKind.Password: case SecretKind.Pin: return Color.FromArgb(255, 138, 138);
-                case SecretKind.ApiToken: case SecretKind.PrivateKey: return Color.FromArgb(197, 163, 255);
+                case SecretKind.ApiToken: case SecretKind.PrivateKey: case SecretKind.CredentialFile: return Color.FromArgb(197, 163, 255);
                 case SecretKind.Card: case SecretKind.Ssn: return Color.FromArgb(141, 184, 255);
                 default: return Theme.AmberHi;
             }
@@ -554,6 +621,9 @@ namespace FindAnything.App
             int i = RowAt(e.Y);
             if (i < 0) { if ((ModifierKeys & (Keys.Control | Keys.Shift)) == 0) { selected.Clear(); Invalidate(); } return; }
             if (e.Button == MouseButtons.Right && selected.Contains(i)) { focus = i; Invalidate(); return; }
+            // pressing on an already-selected row keeps the selection, so the whole selection can be dragged out
+            dragArmed = e.Button == MouseButtons.Left;
+            if (e.Button == MouseButtons.Left && selected.Contains(i) && ModifierKeys == Keys.None) { focus = i; Invalidate(); return; }
             ClickRow(i, ModifierKeys);
         }
 
@@ -580,9 +650,24 @@ namespace FindAnything.App
             Invalidate();
         }
 
+        /// <summary>The selected rows are being dragged out of the list (to Explorer, a mail, another program).</summary>
+        public event EventHandler DragRowsOut;
+        private bool dragArmed;
+
         protected override void OnMouseMove(MouseEventArgs e)
         {
             base.OnMouseMove(e);
+            if (dragArmed && e.Button == MouseButtons.Left)
+            {
+                Size ds = SystemInformation.DragSize;
+                if (Math.Abs(e.X - lastDown.X) > ds.Width || Math.Abs(e.Y - lastDown.Y) > ds.Height)
+                {
+                    dragArmed = false;
+                    HidePreview();
+                    if (DragRowsOut != null) DragRowsOut(this, EventArgs.Empty);
+                    return;
+                }
+            }
             if (dragThumb)
             {
                 Rectangle t = BarTrack, th = Thumb;
@@ -609,6 +694,13 @@ namespace FindAnything.App
         protected override void OnMouseUp(MouseEventArgs e)
         {
             base.OnMouseUp(e);
+            // a plain click on a row of a multi-selection (no drag) selects just that row, as Explorer does
+            if (dragArmed && e.Button == MouseButtons.Left && ModifierKeys == Keys.None)
+            {
+                int i = RowAt(e.Y);
+                if (i >= 0 && selected.Count > 1 && selected.Contains(i)) ClickRow(i, Keys.None);
+            }
+            dragArmed = false;
             if (dragThumb) { dragThumb = false; Invalidate(); }
         }
 

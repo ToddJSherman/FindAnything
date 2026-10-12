@@ -20,8 +20,10 @@ namespace FindAnything.Core
         public volatile string Current = "";
         public string Error;   // set by the caller when the search could not run at all
 
-        private Func<string, float[]> embed;
-        private List<float[]> queries;
+        /// <summary>Scores one picture: sets hit.Score (and hit.Weak when it does not look alike at all).</summary>
+        public delegate void ScoreFn(string ioPath, FileHit hit);
+
+        private ScoreFn score;
         private readonly List<string> roots;
         private readonly string[] skipDirs;
         private readonly HashSet<string> skipFiles = new HashSet<string>(StringComparer.OrdinalIgnoreCase);   // the sample pictures themselves
@@ -41,8 +43,36 @@ namespace FindAnything.Core
         /// </summary>
         public void Run(Func<string, float[]> embed, List<float[]> queries, int threads, CancellationToken ct)
         {
-            this.embed = embed;
-            this.queries = queries;
+            Run(delegate(string p, FileHit h) { h.Score = Closest(queries, embed(p)); }, threads, ct);
+        }
+
+        private static float Closest(List<float[]> queries, float[] e)
+        {
+            float best = -1;
+            foreach (float[] q in queries) best = Math.Max(best, Clip.Similarity(q, e));
+            return best;
+        }
+
+        /// <summary>
+        /// Sample pictures and words together: a picture must look like a sample (DINOv2, the measured cut-off); those
+        /// that do are scored by how well they match the words (CLIP). Pictures that don't look alike are marked Weak and
+        /// keep their look score; the words model is only run on look-alikes, which keeps the extra CPU small.
+        /// </summary>
+        public static ScoreFn LookThenWords(Clip clip, List<float[]> looks, float[] words)
+        {
+            return delegate(string p, FileHit h)
+            {
+                float look = Closest(looks, clip.EmbedLook(p));
+                h.Look = look;
+                if (look < Clip.LookAlike) { h.Weak = true; h.Score = look - 1; return; }
+                h.Score = Clip.Similarity(words, clip.EmbedImage(p));
+            };
+        }
+
+        /// <summary>Scores every picture under the folders with the given scorer.</summary>
+        public void Run(ScoreFn score, int threads, CancellationToken ct)
+        {
+            this.score = score;
             List<FileInfo> files = new List<FileInfo>();
             Stack<DirectoryInfo> stack = new Stack<DirectoryInfo>();
             foreach (string r in roots)
@@ -109,14 +139,11 @@ namespace FindAnything.Core
             try
             {
                 if (skipFiles.Contains(path)) return;
-                float[] e = embed(f.FullName);
                 FileHit h = new FileHit();
                 h.IoPath = f.FullName; h.Path = path; h.Name = f.Name; h.Folder = LongPath.Strip(f.DirectoryName);
                 h.Size = f.Length; h.Modified = f.LastWriteTime;
                 h.Source = "SIMILAR";
-                float best = -1;
-                foreach (float[] q in queries) best = Math.Max(best, Clip.Similarity(q, e));
-                h.Score = best;
+                score(f.FullName, h);
                 Hits.Enqueue(h);
             }
             catch (Exception ex) { Note(path + ": " + ex.Message); }

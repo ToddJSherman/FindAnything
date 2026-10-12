@@ -118,6 +118,28 @@ namespace FindAnything.Core
             return new AlignedStream(new FileStream(h, FileAccess.Read, 4096, false), length);
         }
 
+        /// <summary>Opens a volume ("C:\") read-only, for reading its file system directly. Needs administrator rights.</summary>
+        public static AlignedStream OpenVolume(string root)
+        {
+            string letter = root.Substring(0, 2);
+            SafeFileHandle h = CreateFile(@"\\.\" + letter, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, IntPtr.Zero, OPEN_EXISTING, 0, IntPtr.Zero);
+            if (h.IsInvalid)
+            {
+                int err = Marshal.GetLastWin32Error();
+                h.Dispose();
+                throw new IOException(err == 5 ? "Reading a drive directly needs administrator rights." : new Win32Exception(err).Message);
+            }
+            byte[] outBuf = new byte[8];
+            int returned;
+            if (!DeviceIoControl(h, IOCTL_DISK_GET_LENGTH_INFO, IntPtr.Zero, 0, outBuf, 8, out returned, IntPtr.Zero))
+            {
+                int err = Marshal.GetLastWin32Error();
+                h.Dispose();
+                throw new IOException("Could not read the size of " + letter + ": " + new Win32Exception(err).Message);
+            }
+            return new AlignedStream(new FileStream(h, FileAccess.Read, 4096, false), BitConverter.ToInt64(outBuf, 0));
+        }
+
         private const uint GENERIC_READ = 0x80000000, FILE_SHARE_READ = 1, FILE_SHARE_WRITE = 2, OPEN_EXISTING = 3;
         private const uint IOCTL_DISK_GET_LENGTH_INFO = 0x0007405C, IOCTL_VOLUME_GET_VOLUME_DISK_EXTENTS = 0x00560000;
 

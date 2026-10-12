@@ -731,9 +731,12 @@ namespace FindAnything.Ui
             }
         }
 
+        /// <summary>Off in a narrow window: the tabs drop their icons to fit.</summary>
+        public bool ShowIcons = true;
+
         private int ItemWidth(int i)
         {
-            return Theme.TextWidth(items[i], Theme.UiSemibold(13)) + Theme.S(icons[i].Length > 0 ? 44 : 28);
+            return Theme.TextWidth(items[i], Theme.UiSemibold(13)) + Theme.S(ShowIcons && icons[i].Length > 0 ? 44 : 28);
         }
 
         public int PreferredWidth()
@@ -773,7 +776,7 @@ namespace FindAnything.Ui
                 bool on = i == selected;
                 Color fg = on ? Anim.Mix(Theme.Dim, Theme.AmberHi, t) : (i == hoverIndex ? Theme.Text : Theme.Dim);
                 int tx = r.Left + Theme.S(14);
-                if (icons[i].Length > 0)
+                if (ShowIcons && icons[i].Length > 0)
                 {
                     Glyph(g, icons[i], 13, fg, new Rectangle(tx, r.Top, Theme.S(14), r.Height), Theme.Center);
                     tx += Theme.S(20);

@@ -187,7 +187,7 @@ namespace FindAnything.Core
             }
             catch (Exception) { }
 
-            if (set.SecretsMode) { FindSecrets(fi, hit, ct); return; }
+            if (set.SecretsMode) { bool keyFile = FindCredentialFile(hit); FindSecrets(fi, hit, ct, keyFile); return; }
             if (names != null && names.IsMatch(name)) hit.NameMatch = true;
 
             if (scanner != null)
@@ -294,8 +294,38 @@ namespace FindAnything.Core
             return true;
         }
 
+        /// <summary>Sensitive data: the file itself is a credential (an SSH key, .env, a vault...).</summary>
+        /// Returns true for key files, whose contents need no second "private key" row.
+        private bool FindCredentialFile(FileHit file)
+        {
+            if (!set.Secrets.CredentialFiles) return false;
+            int severity;
+            string label = CredentialFiles.Check(file.Path, out severity);
+            if (label == null) return false;
+            bool keyFile = label.EndsWith("private key");
+            string filter = (set.Text ?? "").Trim();
+            if (filter.Length > 0 && file.Path.IndexOf(filter, StringComparison.OrdinalIgnoreCase) < 0 && label.IndexOf(filter, StringComparison.OrdinalIgnoreCase) < 0) return keyFile;
+            SecretFinding f = new SecretFinding();
+            f.Kind = SecretKind.CredentialFile;
+            f.Label = label;
+            f.Value = file.Name;
+            f.Line = file.Name + "   in " + file.Folder;
+            f.ValueStart = 0;
+            f.Severity = severity;
+            SecretAdvice.Rate(f, file.Path);
+            FileHit h = new FileHit();
+            h.IoPath = file.IoPath; h.Path = file.Path; h.Name = file.Name; h.Folder = file.Folder;
+            h.Size = file.Size; h.Modified = file.Modified; h.Source = "";
+            h.Secret = f;
+            h.ContentHits = 1;
+            h.Preview = f.Line;
+            Interlocked.Increment(ref HitCount);
+            Hits.Enqueue(h);
+            return keyFile;
+        }
+
         /// <summary>Keys mode: one result row per key, serial, password or token found in the file.</summary>
-        private void FindSecrets(FileInfo fi, FileHit file, CancellationToken ct)
+        private void FindSecrets(FileInfo fi, FileHit file, CancellationToken ct, bool keyFile)
         {
             if (set.MaxFileBytes > 0 && file.Size > set.MaxFileBytes) { Interlocked.Increment(ref SkippedLarge); return; }
             if (set.SkipCloudOnly && IsCloudOnly(fi)) { Interlocked.Increment(ref SkippedCloud); return; }
@@ -327,12 +357,14 @@ namespace FindAnything.Core
             string filter = (set.Text ?? "").Trim();
             foreach (SecretFinding f in found)
             {
+                if (keyFile && f.Kind == SecretKind.PrivateKey) continue;   // already listed as the key file
                 if (filter.Length > 0 && f.Line.IndexOf(filter, StringComparison.OrdinalIgnoreCase) < 0 &&
                     file.Name.IndexOf(filter, StringComparison.OrdinalIgnoreCase) < 0) continue;
                 FileHit h = new FileHit();
                 h.IoPath = file.IoPath; h.Path = file.Path; h.Name = file.Name; h.Folder = file.Folder;
                 h.Size = file.Size; h.Modified = file.Modified; h.Source = source;
                 h.Secret = f;
+                SecretAdvice.Rate(f, file.Path);
                 h.ContentHits = 1;
                 h.FirstLine = f.LineNumber;
                 h.Preview = f.Line;

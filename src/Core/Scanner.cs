@@ -33,6 +33,13 @@ namespace FindAnything.Core
         /// <summary>Similar pictures: how close this picture is to the sample or description (cosine, -1..1).</summary>
         public float Score;
 
+        /// <summary>Similar pictures with samples and words: how alike it looks, and whether it fell below the cut-off.</summary>
+        public float Look;
+        public bool Weak;
+
+        /// <summary>Deleted files: the DeletedFile or RecycledFile this row is about.</summary>
+        public object Tag;
+
         public string HitsText
         {
             get { return ContentHits == 0 ? "" : (HitsCapped ? ContentHits + "+" : ContentHits.ToString()); }

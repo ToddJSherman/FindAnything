@@ -21,6 +21,7 @@ internal static class Tests
         LongPath.EnableInProcess();
 
         if (args.Length >= 3 && args[0] == "huge") return Huge(args[1], double.Parse(args[2]));
+        if (args.Length >= 2 && args[0] == "deleted") return Deleted(args[1], args.Length > 2 ? args[2] : "", args.Length > 3 ? args[3] : null);
         if (args.Length >= 3 && args[0] == "clip") return ClipRank(args[1], args[2], args.Length > 3 ? int.Parse(args[3]) : 30,
             args.Length > 4 ? int.Parse(args[4]) : Math.Max(1, Environment.ProcessorCount / 4), args.Length > 5 ? int.Parse(args[5]) : 1);
         if (args.Length >= 3 && args[0] == "clipprep")
@@ -66,6 +67,9 @@ internal static class Tests
         OcrTests(work, args.Length >= 1 ? args[0] : null);
         DriveTests(work);
         PictureTests(work);
+        FileOpsTests(work);
+        SensitiveTests(work);
+        DeletedTests();
 
         Console.WriteLine();
         Console.WriteLine("{0} passed, {1} failed", passed, failed);
@@ -664,12 +668,20 @@ internal static class Tests
             List<float[]> qs = new List<float[]>();
             Func<string, float[]> embed;
             if (query.StartsWith("text:")) { embed = clip.EmbedImage; qs.Add(clip.EmbedText(query.Substring(5))); }
+            else if (query.Contains("+text:")) embed = null;
             else { embed = clip.EmbedLook; foreach (string one in query.Split('|')) qs.Add(clip.EmbedLook(one)); }
             Console.WriteLine("query embedded in {0} ms", sw.ElapsedMilliseconds);
             PictureSearch ps = new PictureSearch(new List<string> { folder }, "", null);
             sw.Restart();
             TimeSpan cpu0 = Process.GetCurrentProcess().TotalProcessorTime;
-            ps.Run(embed, qs, workers, None);
+            int plus = query.IndexOf("+text:");
+            if (plus > 0)   // pictures and words: "a.jpg|b.jpg+text:in a costume"
+            {
+                List<float[]> looks = new List<float[]>();
+                foreach (string one in query.Substring(0, plus).Split('|')) looks.Add(clip.EmbedLook(one));
+                ps.Run(PictureSearch.LookThenWords(clip, looks, clip.EmbedText(query.Substring(plus + 6))), workers, None);
+            }
+            else ps.Run(embed, qs, workers, None);
             double secs = sw.Elapsed.TotalSeconds;
             double cpu = (Process.GetCurrentProcess().TotalProcessorTime - cpu0).TotalSeconds;
             Console.WriteLine("workers {0}, model threads {1}: CPU {2:0.0} s = {3:0} ms per picture, {4:0.0} cores busy on average",
@@ -679,9 +691,140 @@ internal static class Tests
             Console.WriteLine("{0} pictures in {1:0.0} s ({2:0.0}/s), {3} errors", hits.Count, secs, hits.Count / secs, ps.ErrorCount);
             string e;
             while (ps.Errors.TryDequeue(out e)) Console.WriteLine("  error: " + e);
-            for (int i = 0; i < hits.Count && i < top; i++) Console.WriteLine("{0,3}. {1:0.000}  {2}", i + 1, hits[i].Score, hits[i].Name);
+            for (int i = 0; i < hits.Count && i < top; i++) Console.WriteLine("{0,3}. {1:0.000}  {2}{3}", i + 1, hits[i].Score, hits[i].Name, hits[i].Weak ? "  (not alike)" : "");
         }
         return 0;
+    }
+
+    // ------------------------------------------------------------------ deleted files
+
+    private static void DeletedTests()
+    {
+        // run list: 0x21 = 1-byte length, 2-byte offset; then a run 0x10 clusters back (negative offset); then a hole
+        byte[] runs = { 0x21, 0x18, 0x34, 0x56, 0x11, 0x08, 0xF0, 0x01, 0x04, 0x00 };
+        List<DataRun> r = NtfsVolume.DecodeRuns(runs, 0, runs.Length);
+        Check("deleted: data runs decode (absolute, relative back, sparse)",
+            r.Count == 3 && r[0].Lcn == 0x5634 && r[0].Length == 0x18 && r[1].Lcn == 0x5634 - 0x10 && r[1].Length == 8 && r[2].Lcn == -1 && r[2].Length == 4,
+            r.Count.ToString());
+
+        // a 1 KB record with 512-byte sectors: the check value at each sector end is swapped back
+        byte[] rec = new byte[1024];
+        Encoding.ASCII.GetBytes("FILE").CopyTo(rec, 0);
+        rec[4] = 0x30; rec[6] = 3;                    // update sequence array at 0x30, 3 entries
+        rec[0x30] = 0xAB; rec[0x31] = 0xCD;           // check value
+        rec[0x32] = 0x11; rec[0x33] = 0x22;           // original bytes of the end of sector 1
+        rec[0x34] = 0x33; rec[0x35] = 0x44;           // ... and of sector 2
+        rec[510] = 0xAB; rec[511] = 0xCD; rec[1022] = 0xAB; rec[1023] = 0xCD;
+        byte[] torn = (byte[])rec.Clone();
+        torn[1022] = 0; torn[1023] = 0;               // sector 2 does not carry the check value: a torn write
+        bool ok = NtfsVolume.ApplyFixups(rec, 512);
+        Check("deleted: record fix-ups restored", ok && rec[510] == 0x11 && rec[511] == 0x22 && rec[1022] == 0x33 && rec[1023] == 0x44);
+        Check("deleted: a torn record is rejected", !NtfsVolume.ApplyFixups(torn, 512));
+
+        // a version-2 Recycle Bin $I record
+        string orig = @"C:\Users\x\Pictures\roxy.jpg";
+        byte[] info = new byte[28 + (orig.Length + 1) * 2];
+        BitConverter.GetBytes(2L).CopyTo(info, 0);
+        BitConverter.GetBytes(12345L).CopyTo(info, 8);
+        BitConverter.GetBytes(new DateTime(2026, 10, 1, 12, 0, 0, DateTimeKind.Utc).ToFileTimeUtc()).CopyTo(info, 16);
+        BitConverter.GetBytes(orig.Length + 1).CopyTo(info, 24);
+        Encoding.Unicode.GetBytes(orig).CopyTo(info, 28);
+        RecycledFile rf = RecycleBin.ReadInfo(info);
+        Check("deleted: Recycle Bin record read", rf != null && rf.OriginalPath == orig && rf.Size == 12345 && rf.Deleted.ToUniversalTime().Day == 1);
+    }
+
+    /// <summary>tests.exe deleted [drive] [name filter] [recover to]: lists deleted files (admin), optionally recovers them.</summary>
+    private static int Deleted(string root, string filter, string recoverTo)
+    {
+        if (root.Length == 2) root += "\\";
+        Stopwatch sw = Stopwatch.StartNew();
+        using (NtfsVolume v = new NtfsVolume(RawDisk.OpenVolume(root), root))
+        {
+            List<DeletedFile> files = v.FindDeleted(delegate(string n) { return filter.Length == 0 || n.IndexOf(filter, StringComparison.OrdinalIgnoreCase) >= 0; }, None);
+            Console.WriteLine("{0}: {1:N0} MFT records ({2:N0} valid, {3:N0} torn), cluster {4}, {5:N0} deleted ({6:N0} without data), {7:N0} matching in {8:0.0} s",
+                root, v.Records, v.Valid, v.Torn, v.ClusterSize, v.DeletedSeen, v.NoData, files.Count, sw.Elapsed.TotalSeconds);
+            foreach (DeletedFile f in files)
+            {
+                string state = f.Chance == 2 ? "intact" : f.Chance == 1 ? "PARTLY overwritten" : "OVERWRITTEN";
+                Console.WriteLine("  {0,-60} {1,12:N0} B  {2}{3}", f.Path, f.Size, state, f.Resident != null ? " (in the MFT)" : "");
+                if (recoverTo != null)
+                {
+                    Directory.CreateDirectory(recoverTo);
+                    string dest = FileOps.UniqueName(recoverTo, f.Name);
+                    using (FileStream o = File.Create(dest)) v.Recover(f, o, None, null);
+                }
+            }
+        }
+        return 0;
+    }
+
+    // ------------------------------------------------------------------ sensitive data
+
+    private static void SensitiveTests(string work)
+    {
+        int sev;
+        Check("sensitive: SSH key file", CredentialFiles.Check(@"C:\Users\x\.ssh\id_ed25519", out sev) == "SSH private key" && sev == 3);
+        Check("sensitive: public key is not a secret", CredentialFiles.Check(@"C:\Users\x\.ssh\id_ed25519.pub", out sev) == null);
+        Check("sensitive: .env yes, .env.example no", CredentialFiles.Check(@"D:\app\.env", out sev) != null && CredentialFiles.Check(@"D:\app\.env.example", out sev) == null);
+        Check("sensitive: AWS credentials only in .aws", CredentialFiles.Check(@"C:\Users\x\.aws\credentials", out sev) == "AWS access keys" && CredentialFiles.Check(@"D:\notes\credentials", out sev) == null);
+        Check("sensitive: vaults are low", CredentialFiles.Check(@"D:\x\Passwords.kdbx", out sev) != null && sev == 1);
+
+        SecretFinding pw = new SecretFinding(); pw.Kind = SecretKind.Password;
+        SecretAdvice.Rate(pw, @"D:\notes.txt");
+        SecretFinding key = new SecretFinding(); key.Kind = SecretKind.ProductKey;
+        SecretAdvice.Rate(key, @"C:\Users\x\OneDrive\keys.txt");
+        SecretFinding env = new SecretFinding(); env.Kind = SecretKind.CredentialFile; env.Label = "Environment secrets file"; env.Severity = 2;
+        SecretAdvice.Rate(env, @"C:\Users\x\OneDrive\proj\.env");
+        Check("sensitive: severities (password high, product key low even when synced, synced .env raised)",
+            pw.Severity == 3 && key.Severity == 1 && env.Severity == 3 && env.Advice.Contains("cloud-synced"), pw.Severity + "/" + key.Severity + "/" + env.Severity);
+
+        string root = Path.Combine(work, "sensitive");
+        Directory.CreateDirectory(Path.Combine(root, ".ssh"));
+        File.WriteAllText(Path.Combine(root, ".ssh", "id_rsa"), "-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZW\n-----END OPENSSH PRIVATE KEY-----\n");
+        File.WriteAllText(Path.Combine(root, ".env"), "DEBUG=1\nGITHUB_TOKEN=ghp_" + new string('a', 36) + "\n");
+        SearchSettings s = new SearchSettings();
+        s.Roots.Add(root);
+        s.SecretsMode = true;
+        List<FileHit> found = RunJob(s);
+        int keyRows = 0, envFile = 0, token = 0;
+        foreach (FileHit h in found)
+        {
+            if (h.Name == "id_rsa") keyRows++;
+            if (h.Name == ".env" && h.Secret.Kind == SecretKind.CredentialFile) envFile++;
+            if (h.Name == ".env" && h.Secret.Kind == SecretKind.ApiToken && h.Secret.Severity == 3 && h.Secret.Advice.Length > 0) token++;
+        }
+        Check("sensitive: key file listed once, .env listed as a file and its token rated high", keyRows == 1 && envFile == 1 && token == 1,
+            keyRows + "/" + envFile + "/" + token + " of " + found.Count);
+    }
+
+    // ------------------------------------------------------------------ bulk copy / move
+
+    private static void FileOpsTests(string work)
+    {
+        string src = Path.Combine(work, "ops-src"), a = Path.Combine(src, "a"), b = Path.Combine(src, "b"), dest = Path.Combine(work, "ops-dest");
+        Directory.CreateDirectory(a); Directory.CreateDirectory(b); Directory.CreateDirectory(dest);
+        File.WriteAllText(Path.Combine(a, "dog.jpg"), "one");
+        File.WriteAllText(Path.Combine(b, "dog.jpg"), "two");      // same name, other folder
+        File.WriteAllText(Path.Combine(dest, "dog.jpg"), "old");   // already in the destination
+        List<FileHit> items = new List<FileHit>();
+        foreach (string p in new[] { Path.Combine(a, "dog.jpg"), Path.Combine(b, "dog.jpg") })
+        {
+            FileHit h = new FileHit(); h.Path = p; h.IoPath = LongPath.Add(p); h.Name = "dog.jpg"; h.Folder = Path.GetDirectoryName(p); h.Size = 3;
+            items.Add(h);
+        }
+        List<string> problems = new List<string>();
+        string line = FileOps.CopyOrMove(items, dest, false, delegate(string s, double f) { }, None, problems);
+        Check("bulk copy: nothing overwritten, names made unique",
+            File.ReadAllText(Path.Combine(dest, "dog.jpg")) == "old" && File.ReadAllText(Path.Combine(dest, "dog (2).jpg")) == "one" &&
+            File.ReadAllText(Path.Combine(dest, "dog (3).jpg")) == "two" && problems.Count == 0, line);
+        Check("bulk copy: originals left in place", File.Exists(Path.Combine(a, "dog.jpg")) && File.Exists(Path.Combine(b, "dog.jpg")));
+
+        string dest2 = Path.Combine(work, "ops-moved");
+        Directory.CreateDirectory(dest2);
+        line = FileOps.CopyOrMove(items, dest2, true, delegate(string s, double f) { }, None, problems);
+        Check("bulk move: files moved and the rows point at their new place",
+            !File.Exists(Path.Combine(a, "dog.jpg")) && File.Exists(items[0].Path) && File.Exists(items[1].Path) &&
+            items[0].Folder == dest2 && items[1].Name == "dog (2).jpg", line);
     }
 
     // ------------------------------------------------------------------ similar pictures
@@ -727,6 +870,25 @@ internal static class Tests
             Check("pictures: every picture scored, the sample and text file left out", hits.Count == 4 && ps.Pictures == 5 && ps.ErrorCount == 0, hits.Count + "/" + ps.Pictures);
             Check("pictures: a resized copy of the sample is the closest, above the cut-off",
                 hits.Count > 0 && hits[0].Name == "sample-copy.jpg" && hits[0].Score >= FindAnything.Core.Clip.LookAlike, hits.Count > 0 ? hits[0].Name + " " + hits[0].Score : "");
+
+            // samples and words together: the copy looks alike and is scored by the words; random noise does not look alike
+            string mix = Path.Combine(work, "similar-mix");
+            Directory.CreateDirectory(mix);
+            File.Copy(Path.Combine(dir, "sample-copy.jpg"), Path.Combine(mix, "sample-copy.jpg"));
+            using (Bitmap b = new Bitmap(320, 240))
+            {
+                Random rnd = new Random(7);
+                for (int y = 0; y < 240; y++) for (int x = 0; x < 320; x++) b.SetPixel(x, y, Color.FromArgb(rnd.Next(256), rnd.Next(256), rnd.Next(256)));
+                b.Save(Path.Combine(mix, "noise.png"), System.Drawing.Imaging.ImageFormat.Png);
+            }
+            ps = new PictureSearch(new List<string> { mix }, "", null);
+            ps.Run(PictureSearch.LookThenWords(clip, new List<float[]> { clip.EmbedLook(sample) }, clip.EmbedText("stripes and a triangle")), 2, None);
+            hits = Ranked(ps);
+            FileHit copyHit = hits.Find(delegate(FileHit x) { return x.Name == "sample-copy.jpg"; });
+            FileHit noiseHit = hits.Find(delegate(FileHit x) { return x.Name == "noise.png"; });
+            Check("pictures: sample + words keeps the look-alike (scored by the words) and marks the rest not alike",
+                copyHit != null && noiseHit != null && !copyHit.Weak && copyHit.Look >= FindAnything.Core.Clip.LookAlike && copyHit.Score < 0.6f && noiseHit.Weak,
+                (copyHit != null ? "copy look " + copyHit.Look + " words " + copyHit.Score : "") + (noiseHit != null ? "; noise look " + noiseHit.Look : ""));
 
             ps = new PictureSearch(new List<string> { dir }, "", null);
             ps.Run(clip.EmbedImage, new List<float[]> { clip.EmbedText("a solid blue square") }, 2, None);

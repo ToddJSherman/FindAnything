@@ -6,7 +6,7 @@ using System.Threading;
 
 namespace FindAnything.Core
 {
-    public enum SecretKind { ProductKey, LicenseKey, Serial, Password, Pin, ApiToken, PrivateKey, Card, Ssn }
+    public enum SecretKind { ProductKey, LicenseKey, Serial, Password, Pin, ApiToken, PrivateKey, Card, Ssn, CredentialFile }
 
     /// <summary>Which detectors run. The groups match the chips in the window.</summary>
     public sealed class SecretOptions
@@ -16,6 +16,7 @@ namespace FindAnything.Core
         public bool Passwords = true;     // "Password:", "PIN:", "Wi-Fi password is ..."
         public bool Tokens = true;        // API keys and tokens with known prefixes, private key blocks
         public bool Financial = true;     // card numbers (checksum-valid) and US Social Security numbers
+        public bool CredentialFiles = true;   // files that are credentials by what they are: SSH keys, .env, vaults, wallets...
     }
 
     /// <summary>One thing found on one line.</summary>
@@ -44,6 +45,7 @@ namespace FindAnything.Core
                 case SecretKind.ApiToken: return "API token";
                 case SecretKind.PrivateKey: return "Private key";
                 case SecretKind.Card: return "Card number";
+                case SecretKind.CredentialFile: return "Credential file";
                 default: return "SSN";
             }
         }
@@ -417,6 +419,92 @@ namespace FindAnything.Core
         public string Line;        // the line it sits on (trimmed to 300 characters around the value)
         public int ValueStart;     // in Line
         public long LineNumber;
+        public int Severity;       // 3 high, 2 medium, 1 low (SecretAdvice.Rate)
+        public string Advice;      // one line: what to do about it
+    }
+
+    /// <summary>
+    /// Files that are credentials by what they are, whatever is inside: private keys, token files, password vaults,
+    /// wallets, VPN and remote-desktop files. Matched on the name (and folder), never on a guess about the contents.
+    /// </summary>
+    public static class CredentialFiles
+    {
+        /// <summary>A label for the file when it is a credential file, else null. Severity: 3 high, 2 medium, 1 low.</summary>
+        public static string Check(string path, out int severity)
+        {
+            severity = 0;
+            string name = Path.GetFileName(path).ToLowerInvariant();
+            string folder = (Path.GetDirectoryName(path) ?? "").ToLowerInvariant();
+            string ext = Path.GetExtension(name);
+            if (name == "id_rsa" || name == "id_dsa" || name == "id_ecdsa" || name == "id_ed25519" || name == "id_ecdsa_sk" || name == "id_ed25519_sk")
+            { severity = 3; return "SSH private key"; }
+            if (ext == ".ppk") { severity = 3; return "PuTTY private key"; }
+            if (name == ".git-credentials") { severity = 3; return "Git saved credentials"; }
+            if (name == "credentials" && folder.EndsWith("\\.aws")) { severity = 3; return "AWS access keys"; }
+            if (name == "wallet.dat") { severity = 3; return "Crypto wallet"; }
+            if (name == ".env" || (name.StartsWith(".env.") && name != ".env.example" && name != ".env.sample" && name != ".env.template"))
+            { severity = 2; return "Environment secrets file"; }
+            if (name == ".npmrc" || name == ".pypirc" || name == ".netrc" || name == "_netrc" || name == ".dockercfg" || (name == "config.json" && folder.EndsWith("\\.docker")))
+            { severity = 2; return "Package / registry login file"; }
+            if (name == "accesstokens.json" && folder.EndsWith("\\.azure")) { severity = 3; return "Azure access tokens"; }
+            if (ext == ".pfx" || ext == ".p12") { severity = 2; return "Certificate with private key"; }
+            if (ext == ".ovpn") { severity = 2; return "VPN profile"; }
+            if (ext == ".rdp") { severity = 1; return "Remote Desktop file"; }
+            if (ext == ".kdbx" || ext == ".kdb" || ext == ".1pif" || ext == ".opvault" || ext == ".psafe3") { severity = 1; return "Password vault (encrypted)"; }
+            if (ext == ".keystore" || ext == ".jks") { severity = 2; return "Java keystore"; }
+            return null;
+        }
+    }
+
+    /// <summary>How bad a finding is and what to do about it, for the Sensitive data sweep.</summary>
+    public static class SecretAdvice
+    {
+        public static void Rate(SecretFinding f, string path)
+        {
+            int s;
+            string a;
+            switch (f.Kind)
+            {
+                case SecretKind.PrivateKey: s = 3; a = "Private key in a file: keep it only where it is used, readable by your account alone, with a passphrase. Delete stray copies."; break;
+                case SecretKind.ApiToken: s = 3; a = "Token in plain text: revoke or rotate it at the provider, then keep it in an environment variable or secret store."; break;
+                case SecretKind.Password: s = 3; a = "Password in plain text: move it into a password manager, delete this copy, and change it if the file was ever shared."; break;
+                case SecretKind.Card: s = 3; a = "Card number in plain text: delete it or keep it encrypted. Card numbers should never sit in ordinary files."; break;
+                case SecretKind.Ssn: s = 3; a = "Social Security number in plain text: delete it or keep it encrypted (identity theft risk)."; break;
+                case SecretKind.Pin: s = 2; a = "PIN or code in plain text: keep it in a password manager instead."; break;
+                case SecretKind.CredentialFile: s = Math.Max(1, f.Severity); a = CredentialAdvice(f.Label); break;
+                default: s = 1; a = "Licence key or serial: fine to keep, safer in a password manager than in a plain file."; break;
+            }
+            // Cloud-synced folders put the file on someone else's servers too.
+            string p = (path ?? "").ToLowerInvariant();
+            if (s < 3 && f.Kind != SecretKind.ProductKey && f.Kind != SecretKind.LicenseKey && f.Kind != SecretKind.Serial &&
+                (p.Contains("\\onedrive") || p.Contains("\\dropbox\\") || p.Contains("\\google drive\\") || p.Contains("\\icloud")))
+            {
+                s++;
+                a += " It is in a cloud-synced folder, so it is on the provider's servers too.";
+            }
+            f.Severity = s;
+            f.Advice = a;
+        }
+
+        private static string CredentialAdvice(string label)
+        {
+            switch (label)
+            {
+                case "SSH private key": case "PuTTY private key":
+                    return "Private key file: keep it only in your .ssh folder with a passphrase; delete copies elsewhere (Downloads, backups, USB sticks).";
+                case "Git saved credentials": return "Git stores this password in plain text: switch to Git Credential Manager and delete this file.";
+                case "AWS access keys": return "Long-lived AWS keys: prefer short-lived credentials (aws sso login); rotate these if the file was ever copied.";
+                case "Crypto wallet": return "Wallet file: make sure it is encrypted with a strong passphrase and backed up offline.";
+                case "Environment secrets file": return "Secrets file: never commit it or share it; keep it out of synced folders and backups you do not control.";
+                case "Package / registry login file": return "Contains a registry login or token: check it for tokens and rotate any that left this PC.";
+                case "Azure access tokens": return "Cached Azure tokens: sign out (az logout) on machines you do not control.";
+                case "Certificate with private key": return "Certificate with its private key: make sure it has a strong password and is stored only where needed.";
+                case "VPN profile": return "VPN profile: may embed keys or a password; keep it private.";
+                case "Remote Desktop file": return "Remote Desktop file: may hold a saved password; remove saved credentials you no longer need.";
+                case "Java keystore": return "Keystore: make sure it has a strong password.";
+                default: return "Password vault: encrypted, fine to keep. Use a strong master password and keep a backup.";
+            }
+        }
     }
 
     /// <summary>Reads a text stream line by line (any size: long lines are cut into pieces) and runs the detectors.</summary>

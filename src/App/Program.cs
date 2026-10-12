@@ -18,6 +18,7 @@ namespace FindAnything.App
         // FindAnything.exe --view <file> [--find <text>]  open just the viewer
         // FindAnything.exe --keys [folder]                start in Find keys
         // FindAnything.exe --drive-check                  start in Drive check (used when restarting as admin)
+        // FindAnything.exe --deleted [drive or folder]    start in Deleted files
         // FindAnything.exe --similar <picture or folder>  start in Similar pictures (a picture: find ones like it, nearby)
         [STAThread]
         private static void Main(string[] args)
@@ -46,6 +47,7 @@ namespace FindAnything.App
 
             MainForm form = new MainForm();
             if (args.Length > 0 && args[0] == "--drive-check") { form.StartMode = 2; args = new string[0]; }
+            else if (args.Length > 0 && args[0] == "--deleted") { form.StartMode = 4; args = Skip1(args); }
             else if (args.Length > 0 && args[0] == "--keys") { form.StartMode = 1; args = Skip1(args); }
             else if (args.Length > 0 && args[0] == "--similar")
             {

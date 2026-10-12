@@ -12,7 +12,7 @@ using FindAnything.Ui;
 
 namespace FindAnything.App
 {
-    internal sealed class MainForm : Form
+    internal sealed partial class MainForm : Form
     {
         public string StartFolder;
 
@@ -42,19 +42,22 @@ namespace FindAnything.App
         private readonly Chip kPasswords = new Chip("Passwords & PINs", "\uE72E", true);
         private readonly Chip kTokens = new Chip("Tokens & private keys", "\uE943", true);
         private readonly Chip kFinancial = new Chip("Cards & SSNs", "\uE8C7", true);
+        private readonly Chip kFiles = new Chip("Credential files", "\uE8D7", true);
+        private readonly Chip showValues = new Chip("Show values", "\uE7B3", true);
         private readonly SkinButton pickSamples = new SkinButton("Pick samples", "", ButtonKind.Secondary);
         private readonly Chip clipCache = new Chip("Remember fingerprints", "\uE74E", true);
         private readonly Chip weaker = new Chip("Show weaker matches", "\uE890", true);
         private readonly Slider cpuSlider = new Slider();
         private Rectangle cpuLabelRect, cpuValueRect;
-        private readonly Tabs modeTabs = new Tabs(new[] { "Search text", "Find keys", "Similar pictures", "Drive check" }, new[] { Theme.GSearch, "\uE192", "\uE8B9", "\uEDA2" });
-        private int mode;                       // 0 search text, 1 find keys, 2 drive check, 3 similar pictures
+        private readonly Tabs modeTabs = new Tabs(new[] { "Search text", "Sensitive data", "Similar pictures", "Deleted files", "Drive check" }, new[] { Theme.GSearch, "\uE83D", "\uE8B9", "\uE74D", "\uEDA2" });
+        private int mode;                       // 0 search text, 1 sensitive data, 2 drive check, 3 similar pictures, 4 deleted files
         private PictureSearch picSearch;
         private Task picTask;
         private Clip clip;                      // loaded on the first similar-pictures search, kept for the next
         public int StartMode;
         public string StartSample;              // --similar <picture>: search for pictures like it at once
         private string lookTextFiles = "";
+        private readonly string[] findTexts = new string[5];   // each tab keeps its own find box (a picture path stays in Similar pictures)
         private List<DiskInfo> disks;
         private DiskInfo selectedDisk;
         private DriveScan driveScan;
@@ -124,6 +127,7 @@ namespace FindAnything.App
             results.ItemActivate += delegate { OpenViewer(); };
             results.SortRequested += OnSortRequested;
             results.KeyDown += OnResultsKeyDown;
+            results.DragRowsOut += delegate { DragFilesOut(); };
             results.ContextMenuStrip = BuildMenu();
             status.Dock = DockStyle.Bottom;
             status.NotesClicked += delegate { ShowProblems(); };
@@ -201,7 +205,7 @@ namespace FindAnything.App
             pickSamples.Accent = true;
             pickSamples.FontPx = 15;
             pickSamples.Click += delegate { PickSamples(); };
-            findField.Box.TextChanged += delegate { if (mode == 3) UpdateSampleButton(); };
+
             Tip(pickSamples, "Choose one or more pictures to match. Several pictures of the same thing (a pet, a person, a place) find it more reliably.\nYou can also drop pictures on the window.");
             Tip(clipCache, "Remember each picture's fingerprint (512 numbers describing it), so later searches of the same folders are much faster.\n" +
                            "The catch: those fingerprints are stored on this PC, in %LOCALAPPDATA%\\FindAnything\\pictures.\n" +
@@ -227,6 +231,7 @@ namespace FindAnything.App
             cpuSlider.Scrolling += delegate { OnCpuSlider(); };
             cpuSlider.Committed += delegate { OnCpuSlider(); settings.Set("CpuUse", CpuWorkers); };
             ocr.CheckedChanged += delegate { LayoutHero(); };
+            SetUpDeletedChips();
             clipCache.CheckedChanged += delegate
             {
                 Clip.UseCache = clipCache.Checked;
@@ -277,12 +282,15 @@ namespace FindAnything.App
             Tip(kPasswords, "Values after Password, Passcode, Wi-Fi password, PIN, Unlock code...");
             Tip(kTokens, "API keys and tokens by their known formats (GitHub, AWS, Google, Stripe, Slack, OpenAI, Anthropic...) and private key files.");
             Tip(kFinancial, "Card numbers (only ones whose check digit is valid) and US Social Security numbers.");
+            Tip(kFiles, "Files that are credentials by what they are: SSH and PuTTY keys, .env files, Git and AWS credentials,\n.npmrc / .pypirc logins, certificates with private keys, VPN and Remote Desktop files, password vaults, crypto wallets.");
+            Tip(showValues, "Off: secrets are masked on screen (ab\u2022\u2022\u2022\u2022yz), safe for screenshots and onlookers. Copy the key still copies the real value.");
+            showValues.CheckedChanged += delegate { results.ShowSecrets = showValues.Checked; results.Invalidate(); };
 
             hero.Controls.AddRange(new Control[]
             {
                 findField, lookField, browseButton, aboutButton, modeTabs,
                 matchCase, wholeWord, wildcards, loose, inContents, inNames, insideDocs, utf16, ocr, onlyPics, ocrCache,
-                clipCache, weaker, cpuSlider, kProduct, kLabeled, kPasswords, kTokens, kFinancial, filtersChip,
+                clipCache, weaker, cpuSlider, delRecycle, delOnlyGood, kProduct, kLabeled, kPasswords, kTokens, kFinancial, kFiles, showValues, filtersChip,
                 types, excludeTypes, skipFolders, maxMb
             });
             // Last in z-order: the Search button's glow sits under its neighbours instead of erasing their edges.
@@ -295,9 +303,10 @@ namespace FindAnything.App
         {
             switch (mode)
             {
-                case 1: return new[] { new[] { kProduct, kLabeled, kPasswords, kTokens, kFinancial }, new[] { insideDocs, ocr, onlyPics, ocrCache } };
+                case 1: return new[] { new[] { kPasswords, kTokens, kFiles, kFinancial, kProduct, kLabeled }, new[] { insideDocs, ocr, onlyPics, ocrCache }, new[] { showValues } };
                 case 2: return new[] { new[] { matchCase, utf16 } };
                 case 3: return new[] { new[] { weaker }, new[] { clipCache } };
+                case 4: return new[] { new[] { delOnlyGood, delRecycle } };
                 default: return new[] { new[] { matchCase, wholeWord, wildcards, loose }, new[] { inContents, inNames }, new[] { insideDocs, utf16, ocr, onlyPics, ocrCache } };
             }
         }
@@ -307,9 +316,10 @@ namespace FindAnything.App
             get
             {
                 if (Busy) return "Stop";
-                if (mode == 1) return "Find keys";
+                if (mode == 1) return "Sweep";
                 if (mode == 2) return RawDisk.IsAdmin ? "Scan drive" : "Run as admin";
                 if (mode == 3) return "Find pictures";
+                if (mode == 4) return RawDisk.IsAdmin ? "Find deleted" : "Run as admin";
                 return "Search";
             }
         }
@@ -321,17 +331,23 @@ namespace FindAnything.App
             int L = Theme.S(22), R = W - Theme.S(22);
             int y = Theme.S(18) + Theme.S(34) + Theme.S(14);
 
-            // About and the mode tabs, top right
+            // About and the mode tabs, top right; in a narrow window the tabs drop their icons, then About its word
+            int titleRight = L + Theme.S(34) + Theme.S(12) + Theme.Advance("Find Anything", Theme.Display(21)) + Theme.S(16);
+            modeTabs.ShowIcons = true;
+            aboutButton.Text = "About";
+            if (R - aboutButton.PreferredWidth(30) - modeTabs.PreferredWidth() < titleRight) modeTabs.ShowIcons = false;
+            if (R - aboutButton.PreferredWidth(30) - modeTabs.PreferredWidth() < titleRight) aboutButton.Text = "";
             int aw = aboutButton.PreferredWidth(30);
             aboutButton.Bounds = new Rectangle(R - aw + Theme.S(10), Theme.S(18), aw, Theme.S(34));
             int tw = modeTabs.PreferredWidth();
+            modeTabs.Invalidate();
             modeTabs.Bounds = new Rectangle(aboutButton.Left - Theme.S(10) - tw, Theme.S(16), tw, Theme.S(38));
 
             // find + main button
             searchButton.Text = ButtonText;
-            searchButton.Icon = Busy ? Theme.GStop : mode == 1 ? "\uE192" : mode == 2 ? "\uEDA2" : mode == 3 ? "\uE8B9" : Theme.GSearch;
+            searchButton.Icon = Busy ? Theme.GStop : mode == 1 ? "\uE83D" : mode == 2 ? "\uEDA2" : mode == 3 ? "\uE8B9" : mode == 4 ? "\uE74D" : Theme.GSearch;
             int bw = 0;
-            foreach (string label in new[] { "Search", "Find keys", "Scan drive", "Run as admin", "Find pictures", "Stop" })
+            foreach (string label in new[] { "Search", "Sweep", "Scan drive", "Run as admin", "Find pictures", "Find deleted", "Stop" })
                 bw = Math.Max(bw, new SkinButton(label, Theme.GSearch, ButtonKind.Primary).PreferredWidth(54));
             int bp = searchButton.ShadowPad;
             Place(searchButton, new Rectangle(R - (bw - 2 * bp), y, bw - 2 * bp, Theme.S(54)), bp);
@@ -359,7 +375,7 @@ namespace FindAnything.App
             // chips, wrapping onto a second row when the window is narrow
             separatorsX.Clear();
             separatorsY.Clear();
-            foreach (Chip c in new[] { matchCase, wholeWord, wildcards, loose, inContents, inNames, insideDocs, utf16, ocr, onlyPics, ocrCache, clipCache, weaker, kProduct, kLabeled, kPasswords, kTokens, kFinancial })
+            foreach (Chip c in new[] { matchCase, wholeWord, wildcards, loose, inContents, inNames, insideDocs, utf16, ocr, onlyPics, ocrCache, clipCache, weaker, kProduct, kLabeled, kPasswords, kTokens, kFinancial, kFiles, showValues, delRecycle, delOnlyGood })
                 c.Visible = false;
             int pad = Skin.Pad("chip");
             bool filters = mode != 2 && mode != 3;
@@ -390,7 +406,7 @@ namespace FindAnything.App
             }
             // CPU use, for the heavy work (Similar pictures; OCR when it is on): right end of the last chip row, or a
             // row of its own when that row is full
-            bool cpu = mode != 2;
+            bool cpu = mode != 2 && mode != 4;
             cpuSlider.Visible = cpu;
             cpuLabelRect = cpuValueRect = Rectangle.Empty;
             if (cpu)
@@ -433,7 +449,6 @@ namespace FindAnything.App
             hero.Invalidate();
         }
 
-        /// <summary>The tabs read Search text, Find keys, Similar pictures, Drive check; modes 2 and 3 swap places.</summary>
         /// <summary>Pictures read at once (each on one CPU thread), from the CPU use slider: 1 .. every logical processor.</summary>
         private int CpuWorkers
         {
@@ -449,19 +464,26 @@ namespace FindAnything.App
             hero.Invalidate(cpuValueRect);
         }
 
-        private static int TabToMode(int i) { return i == 2 ? 3 : i == 3 ? 2 : i; }
+        // The tabs read Search text, Sensitive data, Similar pictures, Deleted files, Drive check; the mode numbers are
+        // older than that order (Drive check is mode 2).
+        private static readonly int[] tabModes = { 0, 1, 3, 4, 2 };
+        private static int TabToMode(int i) { return tabModes[i]; }
+        private static int ModeToTab(int m) { return Array.IndexOf(tabModes, m); }
 
-        private bool Busy { get { return job != null || driveScan != null || picSearch != null; } }
+        private bool Busy { get { return job != null || driveScan != null || picSearch != null || delScan != null; } }
 
         /// <summary>Switches between Search text, Find keys, Similar pictures and Drive check.</summary>
         private void SetMode(int m)
         {
-            if (Busy) { modeTabs.SelectedIndex = TabToMode(mode); return; }
+            if (Busy) { modeTabs.SelectedIndex = ModeToTab(mode); return; }
             if (mode != 2) lookTextFiles = lookField.Text;
+            findTexts[mode] = findField.Text;
             mode = m;
+            findField.Text = findTexts[mode] ?? "";
             allPictures.Clear();
-            if (modeTabs.SelectedIndex != TabToMode(m)) modeTabs.SelectedIndex = TabToMode(m);
+            if (modeTabs.SelectedIndex != ModeToTab(m)) modeTabs.SelectedIndex = ModeToTab(m);
             results.Similar = mode == 3;
+            results.Deleted = mode == 4;
             results.EmptyImage = mode == 3 ? Skin.Art("grandma-256") : null;
             results.FadeInEmpty();
             hits.Clear();
@@ -471,10 +493,10 @@ namespace FindAnything.App
             switch (mode)
             {
                 case 1:
-                    findField.SetPlaceholder("Optional: only keys mentioning... (Office, Adobe, Steam)");
+                    findField.SetPlaceholder("Optional: only findings mentioning... (AWS, Office, bank)");
                     lookField.Text = lookTextFiles;
-                    results.EmptyTitle = "Find the keys you stashed away";
-                    results.EmptyText = "Product keys, licenses, serials, passwords, PINs and tokens in text files, documents and pictures.";
+                    results.EmptyTitle = "Sweep for sensitive data lying around in plain files";
+                    results.EmptyText = "Passwords, tokens, private keys, credential files, card numbers and licence keys: how bad each one is, and what to do.";
                     break;
                 case 2:
                     findField.SetPlaceholder("Optional: text to look for (your name, email, \"password\")");
@@ -484,6 +506,14 @@ namespace FindAnything.App
                     results.EmptyTitle = RawDisk.IsAdmin ? "Check a drive before you sell or give it away" : "Drive check needs administrator rights";
                     results.EmptyText = RawDisk.IsAdmin
                         ? "Reads every sector (read-only): shows how much of the drive still holds data, and where your text appears."
+                        : "Press Run as admin: Windows asks for permission, then Find Anything reopens here.";
+                    break;
+                case 4:
+                    findField.SetPlaceholder("Optional: part of the name (roxy, .jpg, invoice*)");
+                    lookField.Text = lookTextFiles;
+                    results.EmptyTitle = RawDisk.IsAdmin ? "Find deleted files and get them back" : "Deleted files needs administrator rights";
+                    results.EmptyText = RawDisk.IsAdmin
+                        ? "Reads the drive's file table directly (read-only). Pick a drive, or a folder to look only in it."
                         : "Press Run as admin: Windows asks for permission, then Find Anything reopens here.";
                     break;
                 case 3:
@@ -598,15 +628,43 @@ namespace FindAnything.App
             copy.ShortcutKeyDisplayString = "Ctrl+C";
             ToolStripMenuItem export = new ToolStripMenuItem("Save the list as CSV...", null, delegate { ExportCsv(); });
             ToolStripMenuItem similar = new ToolStripMenuItem("Find similar pictures", null, delegate { FindSimilarToSelected(); });
-            m.Items.AddRange(new ToolStripItem[] { view, copyKey, def, npp, similar, new ToolStripSeparator(), folder, copy, new ToolStripSeparator(), export });
+            ToolStripMenuItem copyFiles = new ToolStripMenuItem("Copy files (paste them in Explorer)", null, delegate { CopyFilesToClipboard(); });
+            copyFiles.ShortcutKeyDisplayString = "Ctrl+Shift+C";
+            ToolStripMenuItem copyAgain = new ToolStripMenuItem("Copy to ...", null, delegate { CopyOrMoveSelected(sessionFolder, false); });
+            copyAgain.Font = Theme.UiSemibold(14);
+            ToolStripMenuItem copyTo = new ToolStripMenuItem("Copy to a folder...", null, delegate { CopyOrMoveSelected(null, false); });
+            ToolStripMenuItem moveTo = new ToolStripMenuItem("Move to a folder...", null, delegate { CopyOrMoveSelected(null, true); });
+            ToolStripMenuItem selectAll = new ToolStripMenuItem("Select all", null, delegate { results.SelectAll(); });
+            ToolStripMenuItem recoverAgain = new ToolStripMenuItem("Recover to ...", null, delegate { RecoverSelected(recoveryFolder); });
+            recoverAgain.Font = Theme.UiSemibold(14);
+            ToolStripMenuItem recoverTo = new ToolStripMenuItem("Recover to a folder...", null, delegate { RecoverSelected(null); });
+            selectAll.ShortcutKeyDisplayString = "Ctrl+A";
+            m.Items.AddRange(new ToolStripItem[] { view, copyKey, recoverAgain, recoverTo, def, npp, similar, new ToolStripSeparator(),
+                copyAgain, copyTo, moveTo, copyFiles, new ToolStripSeparator(), folder, copy, selectAll, new ToolStripSeparator(), export });
             m.Opening += delegate
             {
                 bool any = results.SelectedItems.Count > 0;
+                int n = RealFiles(results.SelectedItems).Count;
+                string count = n == 1 ? "" : " (" + n.ToString("N0") + ")";
+                copyAgain.Visible = sessionFolder != null && n > 0;
+                if (sessionFolder != null) copyAgain.Text = "Copy" + count + " to \"" + Path.GetFileName(sessionFolder.TrimEnd('\\')) + "\"";
+                copyTo.Text = "Copy" + count + " to a folder...";
+                moveTo.Text = "Move" + count + " to a folder...";
+                copyTo.Visible = moveTo.Visible = copyFiles.Visible = n > 0;
+                int del = 0;
+                foreach (FileHit dh in results.SelectedItems) if (IsDeletedRow(dh)) del++;
+                string dcount = del == 1 ? "" : " (" + del.ToString("N0") + ")";
+                recoverTo.Visible = del > 0;
+                recoverTo.Text = "Recover" + dcount + " to a folder...";
+                recoverAgain.Visible = del > 0 && recoveryFolder != null;
+                if (recoveryFolder != null) recoverAgain.Text = "Recover" + dcount + " to \"" + Path.GetFileName(recoveryFolder.TrimEnd('\\')) + "\"";
+                if (mode == 4) { copyAgain.Visible = copyTo.Visible = moveTo.Visible = copyFiles.Visible = false; view.Text = "Preview"; }
+                else view.Text = "Open in viewer";
                 view.Enabled = def.Enabled = folder.Enabled = copy.Enabled = any;
                 npp.Visible = Shell.NotepadPlusPlus != null && mode != 2;
                 FileHit fh = results.FocusedItem;
                 copyKey.Visible = fh != null && fh.Secret != null;
-                def.Visible = folder.Visible = mode != 2;
+                def.Visible = folder.Visible = mode != 2 && mode != 4;
                 npp.Enabled = any;
                 bool pics = false;
                 foreach (FileHit sh in results.SelectedItems) if (sh.Source != "DISK" && Ocr.IsImage(sh.Path)) pics = true;
@@ -668,6 +726,8 @@ namespace FindAnything.App
             onlyPics.Checked = ocr.Checked && settings.GetBool("OnlyPictures", false);
             clipCache.Checked = settings.GetBool("PictureCache", false);
             weaker.Checked = settings.GetBool("ShowWeakerMatches", false);
+            delRecycle.Checked = settings.GetBool("Deleted.RecycleBin", true);
+            delOnlyGood.Checked = settings.GetBool("Deleted.OnlyRecoverable", true);
             // default: a quarter of the CPU threads (2 on an 8-thread laptop, 6 on a 24-thread desktop)
             CpuWorkers = (int)settings.GetLong("CpuUse", settings.GetLong("PictureWorkers", Math.Max(1, Environment.ProcessorCount / 4)));
             settings.Remove("PictureWorkers");
@@ -680,7 +740,8 @@ namespace FindAnything.App
             kLabeled.Checked = settings.GetBool("Keys.Labeled", true);
             kPasswords.Checked = settings.GetBool("Keys.Passwords", true);
             kTokens.Checked = settings.GetBool("Keys.Tokens", true);
-            kFinancial.Checked = settings.GetBool("Keys.Financial", false);
+            kFinancial.Checked = settings.GetBool("Keys.Financial", true);
+            kFiles.Checked = settings.GetBool("Keys.Files", true);
             wildcards.Checked = settings.GetBool("Wildcards", true);
             wholeWord.Checked = settings.GetBool("WholeWord", false);
             inContents.Checked = settings.GetBool("InContents", true);
@@ -704,12 +765,15 @@ namespace FindAnything.App
             settings.Set("OnlyPictures", onlyPics.Checked);
             settings.Set("PictureCache", clipCache.Checked);
             settings.Set("ShowWeakerMatches", weaker.Checked);
+            settings.Set("Deleted.RecycleBin", delRecycle.Checked);
+            settings.Set("Deleted.OnlyRecoverable", delOnlyGood.Checked);
             settings.Set("CpuUse", CpuWorkers);
             settings.Set("Keys.Product", kProduct.Checked);
             settings.Set("Keys.Labeled", kLabeled.Checked);
             settings.Set("Keys.Passwords", kPasswords.Checked);
             settings.Set("Keys.Tokens", kTokens.Checked);
             settings.Set("Keys.Financial", kFinancial.Checked);
+            settings.Set("Keys.Files", kFiles.Checked);
             settings.Set("Wildcards", wildcards.Checked);
             settings.Set("WholeWord", wholeWord.Checked);
             settings.Set("InContents", inContents.Checked);
@@ -739,7 +803,9 @@ namespace FindAnything.App
             findField.Box.SelectAll();
             if (StartSample != null)
             {
-                findField.Text = StartSample;
+                samples.Clear();
+                samples.Add(StartSample);
+                UpdateSampleButton();
                 BeginInvoke((MethodInvoker)StartPictureSearch);
             }
         }
@@ -747,6 +813,7 @@ namespace FindAnything.App
         protected override void OnFormClosing(FormClosingEventArgs e)
         {
             if (cts != null) cts.Cancel();
+            CleanUpPreviews();
             SaveSettings();
             base.OnFormClosing(e);
         }
@@ -770,12 +837,13 @@ namespace FindAnything.App
 
         private void OnDragDrop(object sender, DragEventArgs e)
         {
+            if (draggingOut) return;   // our own rows dropped back on the window
             string[] files = e.Data.GetData(DataFormats.FileDrop) as string[];
             if (files == null || files.Length == 0) return;
             // Similar pictures: dropped pictures are the samples, dropped folders are where to look
             List<string> pics = new List<string>(), other = new List<string>();
             foreach (string p in files) (mode == 3 && File.Exists(p) && Ocr.IsImage(p) ? pics : other).Add(p);
-            if (pics.Count > 0) findField.Text = string.Join(";", pics.ToArray());
+            if (pics.Count > 0) { samples.Clear(); samples.AddRange(pics); UpdateSampleButton(); }
             if (other.Count > 0) lookField.Text = string.Join(";", other.ToArray());
         }
 
@@ -812,6 +880,7 @@ namespace FindAnything.App
             if (Busy) return;
             if (mode == 2) { StartDriveScan(); return; }
             if (mode == 3) { StartPictureSearch(); return; }
+            if (mode == 4) { StartDeletedSearch(); return; }
             SearchSettings s = new SearchSettings();
             s.Roots = Roots();
             s.Text = findField.Text;
@@ -839,8 +908,9 @@ namespace FindAnything.App
                 s.Secrets.Passwords = kPasswords.Checked;
                 s.Secrets.Tokens = kTokens.Checked;
                 s.Secrets.Financial = kFinancial.Checked;
-                if (!(kProduct.Checked || kLabeled.Checked || kPasswords.Checked || kTokens.Checked || kFinancial.Checked))
-                { Warn("Turn on at least one kind of key to look for."); return; }
+                s.Secrets.CredentialFiles = kFiles.Checked;
+                if (!(kProduct.Checked || kLabeled.Checked || kPasswords.Checked || kTokens.Checked || kFinancial.Checked || kFiles.Checked))
+                { Warn("Turn on at least one kind of sensitive data to look for."); return; }
             }
 
             if (s.Roots.Count == 0) { Warn("Pick a folder or drive to look in."); lookField.Box.Focus(); return; }
@@ -893,6 +963,7 @@ namespace FindAnything.App
         {
             if (driveScan != null) { OnDriveTick(); return; }
             if (picSearch != null) { OnPictureTick(); return; }
+            if (delScan != null) { OnDeletedTick(); return; }
             if (job == null) { tick.Stop(); return; }
             bool done = jobTask.IsCompleted;
 
@@ -919,7 +990,15 @@ namespace FindAnything.App
                 bool stopped = cts.IsCancellationRequested;
                 add((stopped ? "Stopped after " : "Done in ") + clock.Elapsed.TotalSeconds.ToString("0.0") + " s", true);
             }
-            add(hits.Count.ToString("N0"), true); add("found", false);
+            if (mode == 1)
+            {
+                int[] sev = new int[4];
+                foreach (FileHit x in hits) if (x.Secret != null) sev[Math.Max(0, Math.Min(3, x.Secret.Severity))]++;
+                add(sev[3].ToString("N0"), true); add("high", false);
+                add(sev[2].ToString("N0"), true); add("medium", false);
+                add(sev[1].ToString("N0"), true); add("low", false);
+            }
+            else { add(hits.Count.ToString("N0"), true); add("found", false); }
             add(searched.ToString("N0"), true); add(searched == 1 ? "file searched" : "files searched", false);
             add(Fmt.Size(Interlocked.Read(ref job.BytesRead)), true); add("read", false);
             if (seen != searched) { add((seen - searched).ToString("N0"), true); add(seen - searched == 1 ? "other file type skipped" : "other types skipped", false); }
@@ -933,11 +1012,15 @@ namespace FindAnything.App
             if (!done) return;
             if (results.SortColumn < 0)
             {
-                // Results arrive in whatever order the threads finish; settle them into path order.
-                hits.Sort(delegate(FileHit a, FileHit b) { return string.Compare(a.Path, b.Path, StringComparison.CurrentCultureIgnoreCase); });
+                // Results arrive in whatever order the threads finish; settle them into path order (worst first in a sweep).
+                hits.Sort(delegate(FileHit a, FileHit b)
+                {
+                    if (mode == 1 && a.Secret != null && b.Secret != null && a.Secret.Severity != b.Secret.Severity) return b.Secret.Severity.CompareTo(a.Secret.Severity);
+                    return string.Compare(a.Path, b.Path, StringComparison.CurrentCultureIgnoreCase);
+                });
             }
-            results.EmptyTitle = mode == 1 ? "No keys found" : "Nothing found";
-            results.EmptyText = mode == 1 ? "Nothing that looks like a key, serial or password here. Try Pictures (OCR), PDF & Office, or another folder."
+            results.EmptyTitle = mode == 1 ? "No sensitive data found" : "Nothing found";
+            results.EmptyText = mode == 1 ? "Nothing that looks like a password, token, key, card number or credential file here. Try Pictures (OCR), PDF & Office, or another folder."
                                           : "Try fewer words, a * wildcard, Loose, or another folder.";
             results.ItemsChanged();
             results.SelectFirst();
@@ -984,7 +1067,8 @@ namespace FindAnything.App
 
         private void OnResultsKeyDown(object sender, KeyEventArgs e)
         {
-            if (e.KeyCode == Keys.C && e.Control && !e.Shift && mode == 1) { e.Handled = true; CopyKeys(); }
+            if (e.KeyCode == Keys.C && e.Control && e.Shift) { e.Handled = true; CopyFilesToClipboard(); }
+            else if (e.KeyCode == Keys.C && e.Control && !e.Shift && mode == 1) { e.Handled = true; CopyKeys(); }
             else if (e.KeyCode == Keys.C && e.Control) { e.Handled = true; CopyPaths(); }
         }
 
@@ -1020,6 +1104,7 @@ namespace FindAnything.App
                 // show the key itself, found literally
                 o.Text = h.Secret.Value; o.Wildcards = false; o.Loose = false; o.WholeWord = false; o.CaseSensitive = true;
             }
+            if (IsDeletedRow(h)) { PreviewDeleted(h); return; }
             if (h.Source == "DISK") { o.Text = driveText ?? ""; o.Loose = false; }
             try
             {
@@ -1055,6 +1140,63 @@ namespace FindAnything.App
             });
         }
 
+        // ------------------------------------------------------------------ bulk: copy, move, drag out
+
+        private string sessionFolder;   // the last folder files were copied or moved to (this session only)
+        private bool draggingOut;
+
+        /// <summary>Results that are real files on disk (not drive-check offsets).</summary>
+        private static List<FileHit> RealFiles(IList<FileHit> items)
+        {
+            List<FileHit> l = new List<FileHit>();
+            foreach (FileHit h in items) if (h.Source != "DISK" && h.IoPath != null && File.Exists(h.IoPath)) l.Add(h);
+            return l;
+        }
+
+        /// <summary>Copies or moves the selected files to a folder (asked for when null), remembered for the session.</summary>
+        private void CopyOrMoveSelected(string folder, bool move)
+        {
+            List<FileHit> items = RealFiles(results.SelectedItems);
+            if (items.Count == 0) return;
+            if (folder == null)
+            {
+                folder = FolderPicker.Pick(this, sessionFolder ?? Environment.GetFolderPath(Environment.SpecialFolder.MyPictures));
+                if (folder == null) return;
+            }
+            if (!Directory.Exists(LongPath.Add(folder))) { Warn("Can't find \"" + folder + "\"."); return; }
+            sessionFolder = folder;
+            List<string> problemsNow = new List<string>();
+            string title = (move ? "Moving " : "Copying ") + (items.Count == 1 ? "1 file" : items.Count.ToString("N0") + " files");
+            ProgressDialog.Run(this, title, folder, delegate(Action<string, double> report, CancellationToken ct)
+            {
+                return FileOps.CopyOrMove(items, folder, move, report, ct, problemsNow);
+            });
+            if (problemsNow.Count > 0) { problems.AddRange(problemsNow); status.Notes += problemsNow.Count; }
+            if (move) results.Invalidate();   // moved rows now show their new folder
+        }
+
+        private void CopyFilesToClipboard()
+        {
+            List<FileHit> items = RealFiles(results.SelectedItems);
+            if (items.Count == 0) return;
+            System.Collections.Specialized.StringCollection files = new System.Collections.Specialized.StringCollection();
+            foreach (FileHit h in items) files.Add(h.Path);
+            try { Clipboard.SetFileDropList(files); } catch (Exception ex) { Warn(ex.Message); }
+        }
+
+        /// <summary>Drag the selected files out to Explorer, an email, a chat window...</summary>
+        private void DragFilesOut()
+        {
+            List<FileHit> items = RealFiles(results.SelectedItems);
+            if (items.Count == 0) return;
+            string[] paths = new string[items.Count];
+            for (int i = 0; i < items.Count; i++) paths[i] = items[i].Path;
+            DataObject data = new DataObject(DataFormats.FileDrop, paths);
+            draggingOut = true;
+            try { results.DoDragDrop(data, DragDropEffects.Copy); }
+            finally { draggingOut = false; }
+        }
+
         private void CopyKeys()
         {
             StringBuilder sb = new StringBuilder();
@@ -1077,17 +1219,29 @@ namespace FindAnything.App
                 d.FileName = "Find Anything results.csv";
                 if (d.ShowDialog(this) != DialogResult.OK) return;
                 StringBuilder sb = new StringBuilder();
-                sb.Append("Path,Name,Folder,Hits,Line,Found in,First match,Size,Modified\r\n");
+                sb.Append("Path,Name,Folder,Hits,Line,Found in,First match,Size,Modified,Severity,What to do\r\n");
                 foreach (FileHit h in hits)
                 {
                     sb.Append(Csv(h.Path)).Append(',').Append(Csv(h.Name)).Append(',').Append(Csv(h.Folder)).Append(',')
                       .Append(h.HitsText).Append(',').Append(h.ContentHits > 0 ? h.FirstLine.ToString() : "").Append(',')
-                      .Append(Csv(h.MatchText)).Append(',').Append(Csv(h.Preview ?? "")).Append(',')
-                      .Append(h.Size).Append(',').Append(h.Modified.ToString("yyyy-MM-dd HH:mm:ss")).Append("\r\n");
+                      .Append(Csv(h.MatchText)).Append(',').Append(Csv(ExportLine(h))).Append(',')
+                      .Append(h.Size).Append(',').Append(h.Modified.ToString("yyyy-MM-dd HH:mm:ss")).Append(',')
+                      .Append(h.Secret == null ? "" : h.Secret.Severity >= 3 ? "High" : h.Secret.Severity == 2 ? "Medium" : "Low").Append(',')
+                      .Append(Csv(h.Secret == null ? "" : h.Secret.Advice ?? "")).Append("\r\n");
                 }
                 try { File.WriteAllText(d.FileName, sb.ToString(), new UTF8Encoding(true)); }
                 catch (Exception ex) { Warn(ex.Message); }
             }
+        }
+
+        /// <summary>The line for a CSV export: secrets stay masked unless Show values is on (a report should not be a new leak).</summary>
+        private string ExportLine(FileHit h)
+        {
+            string line = h.Preview ?? "";
+            SecretFinding s = h.Secret;
+            if (s == null || showValues.Checked || s.Kind == SecretKind.CredentialFile) return line;
+            int i = line.IndexOf(s.Value, StringComparison.Ordinal);
+            return i < 0 ? line : line.Substring(0, i) + ResultsView.Mask(s.Value) + line.Substring(i + s.Value.Length);
         }
 
         private static string Csv(string s)
@@ -1107,22 +1261,51 @@ namespace FindAnything.App
             return w;
         }
 
-        /// <summary>"Pick samples", or how many sample pictures the find box holds.</summary>
+        /// <summary>"Pick samples", or how many sample pictures there are; the find box then takes optional words.</summary>
         private void UpdateSampleButton()
         {
-            List<string> pics = SamplePictures();
-            pickSamples.Text = pics == null ? "Pick samples" : pics.Count == 1 ? "1 sample" : pics.Count + " samples";
+            pickSamples.Text = samples.Count == 0 ? "Pick samples" : samples.Count == 1 ? "1 sample" : samples.Count + " samples";
             pickSamples.Invalidate();
+            List<string> names = new List<string>();
+            foreach (string p in samples) names.Add(Path.GetFileName(p));
+            Tip(pickSamples, samples.Count == 0
+                ? "Choose one or more pictures to match. Several pictures of the same thing (a pet, a person, a place) find it more reliably.\nYou can also drop pictures on the window."
+                : "Samples: " + string.Join(", ", names.ToArray()) + "\nClick to add, change or clear them. Words in the search box narrow the look-alikes down (\"in a costume\").");
+            if (mode == 3)
+                findField.SetPlaceholder(samples.Count == 0 ? "Describe it (a dog in a costume, the beach) or pick samples"
+                                                            : "Optional: words to narrow the look-alikes down (in a costume, at the beach)");
         }
 
+        /// <summary>The sample button: pick pictures, or, once there are some, a small menu to add, replace or clear them.</summary>
         private void PickSamples()
+        {
+            if (samples.Count == 0) { PickSampleFiles(false); return; }
+            ContextMenuStrip m = DarkMenuRenderer.Menu();
+            foreach (string p in samples)
+            {
+                ToolStripMenuItem it = new ToolStripMenuItem(Path.GetFileName(p));
+                it.Enabled = false;
+                m.Items.Add(it);
+            }
+            m.Items.Add(new ToolStripSeparator());
+            m.Items.Add("Add more pictures...", null, delegate { PickSampleFiles(true); });
+            m.Items.Add("Pick different pictures...", null, delegate { PickSampleFiles(false); });
+            m.Items.Add("Clear the samples", null, delegate { samples.Clear(); UpdateSampleButton(); findField.Box.Focus(); });
+            m.Show(pickSamples, new Point(pickSamples.ShadowPad, pickSamples.Height - pickSamples.ShadowPad));
+        }
+
+        private void PickSampleFiles(bool add)
         {
             using (OpenFileDialog d = new OpenFileDialog())
             {
                 d.Title = "Sample pictures to match";
                 d.Multiselect = true;
                 d.Filter = "Pictures|" + Ocr.PictureMasks + "|All files|*.*";
-                if (d.ShowDialog(this) == DialogResult.OK) findField.Text = string.Join(";", d.FileNames);
+                if (d.ShowDialog(this) != DialogResult.OK) return;
+                if (!add) samples.Clear();
+                foreach (string p in d.FileNames) if (!samples.Contains(p)) samples.Add(p);
+                UpdateSampleButton();
+                findField.Box.Focus();
             }
         }
 
@@ -1135,22 +1318,31 @@ namespace FindAnything.App
             string look = lookField.Text;
             SetMode(3);
             lookField.Text = look;
-            findField.Text = string.Join(";", pics.ToArray());
+            samples.Clear();
+            samples.AddRange(pics);
+            findField.Text = "";
+            UpdateSampleButton();
             StartPictureSearch();
         }
 
-        /// <summary>The find box as sample pictures (paths separated by ;), or null when it is a description.</summary>
-        private List<string> SamplePictures()
+        private readonly List<string> samples = new List<string>();   // Similar pictures: the sample pictures
+
+        /// <summary>Picture paths typed or pasted into the find box (separated by ;) become samples.</summary>
+        private void TakePastedSamples()
         {
             List<string> pics = new List<string>();
             foreach (string part in findField.Text.Split(';'))
             {
                 string p = part.Trim().Trim('"');
                 if (p.Length == 0) continue;
-                if (!Ocr.IsImage(p) || !File.Exists(LongPath.Add(p))) return null;
+                if (!Ocr.IsImage(p) || !File.Exists(LongPath.Add(p))) return;
                 pics.Add(p);
             }
-            return pics.Count > 0 ? pics : null;
+            if (pics.Count == 0) return;
+            samples.Clear();
+            samples.AddRange(pics);
+            findField.Text = "";
+            UpdateSampleButton();
         }
 
         private void StartPictureSearch()
@@ -1160,23 +1352,25 @@ namespace FindAnything.App
             if (roots.Count == 0) { Warn("Pick a folder or drive to look in."); lookField.Box.Focus(); return; }
             foreach (string r in roots)
                 if (!Directory.Exists(LongPath.Add(r)) && !File.Exists(LongPath.Add(r))) { Warn("Can't find \"" + r + "\"."); lookField.Box.Focus(); return; }
-            List<string> samples = SamplePictures();
-            string description = samples == null ? findField.Text.Trim() : null;
-            if (samples == null && description.Length == 0) { Warn("Pick a sample picture (or drop one here), or describe what is in the pictures."); return; }
+            TakePastedSamples();
+            string description = findField.Text.Trim();
+            if (samples.Count == 0 && description.Length == 0) { Warn("Pick a sample picture (or drop one here), or describe what is in the pictures."); return; }
+            List<string> sampleList = new List<string>(samples);
             if (!AiPack.Ensure(this)) return;
             SaveSettings();
 
             hits.Clear();
             allPictures.Clear();
             problems.Clear();
-            picByText = samples == null;
+            picKind = sampleList.Count == 0 ? PicWords : description.Length == 0 ? PicLook : PicBoth;
+            int kind = picKind;
             results.SortColumn = -1;
             results.ScoreLow = results.ScoreHigh = 0;
             results.EmptyTitle = clip == null ? "Loading the picture model..." : "Looking at pictures...";
             results.EmptyText = "Pictures that look alike appear here as they are found.";
             results.ResetSelection();
 
-            List<string> skip = samples ?? new List<string>();
+            List<string> skip = sampleList;
             Clip loaded = clip;
             int workers = CpuWorkers;
             PictureSearch ps = new PictureSearch(roots, skipFolders.Text, skip);
@@ -1190,19 +1384,12 @@ namespace FindAnything.App
                 {
                     if (loaded == null) loaded = new Clip(1);   // one thread per picture; the slider sets how many at once
                     // A sample is matched by how it looks (DINOv2); a description by what is in the picture (CLIP).
-                    List<float[]> queries = new List<float[]>();
-                    Func<string, float[]> embed;
-                    if (samples != null)
-                    {
-                        embed = loaded.EmbedLook;
-                        foreach (string s in samples) queries.Add(loaded.EmbedLook(LongPath.Add(s)));
-                    }
-                    else
-                    {
-                        embed = loaded.EmbedImage;
-                        queries.Add(loaded.EmbedText(description));
-                    }
-                    ps.Run(embed, queries, workers, token);
+                    // Both: look-alikes first (DINOv2), then ranked by the words (CLIP).
+                    List<float[]> looks = new List<float[]>();
+                    foreach (string s in sampleList) looks.Add(loaded.EmbedLook(LongPath.Add(s)));
+                    if (kind == PicLook) ps.Run(loaded.EmbedLook, looks, workers, token);
+                    else if (kind == PicWords) ps.Run(loaded.EmbedImage, new List<float[]> { loaded.EmbedText(description) }, workers, token);
+                    else ps.Run(PictureSearch.LookThenWords(loaded, looks, loaded.EmbedText(description)), workers, token);
                 }
                 catch (OperationCanceledException) { }
                 catch (Exception ex) { ps.Error = ex.Message; }
@@ -1261,7 +1448,8 @@ namespace FindAnything.App
         // ------------------------------------------------------------------ similar pictures: what is shown
 
         private readonly List<FileHit> allPictures = new List<FileHit>();   // every picture scored; hits shows the alike ones
-        private bool picByText;
+        private const int PicLook = 0, PicWords = 1, PicBoth = 2;
+        private int picKind;
 
         /// <summary>
         /// The score a picture needs to be listed. Samples: DINOv2's measured cut-off. Descriptions: CLIP's text scores
@@ -1269,7 +1457,7 @@ namespace FindAnything.App
         /// </summary>
         private float PictureCutoff()
         {
-            if (!picByText) return Clip.LookAlike;
+            if (picKind != PicWords) return Clip.LookAlike;
             float best = 0;
             foreach (FileHit x in allPictures) best = Math.Max(best, x.Score);
             return Math.Max(0.22f, best - 0.05f);
@@ -1284,7 +1472,7 @@ namespace FindAnything.App
             bool hadSelection = results.SelectedItems.Count > 0;
             float cut = PictureCutoff();
             hits.Clear();
-            foreach (FileHit x in allPictures) if (weaker.Checked || x.Score >= cut) hits.Add(x);
+            foreach (FileHit x in allPictures) if (weaker.Checked || (picKind == PicBoth ? !x.Weak : x.Score >= cut)) hits.Add(x);
             RankPictures();
             if (keep != null && hadSelection && hits.Contains(keep)) results.Select(keep);
             results.ItemsChanged();
@@ -1293,7 +1481,7 @@ namespace FindAnything.App
         private void AddPictureCounts(Action<string, bool> add)
         {
             if (weaker.Checked) { add(hits.Count.ToString("N0"), true); add(hits.Count == 1 ? "picture ranked" : "pictures ranked", false); return; }
-            add(hits.Count.ToString("N0"), true); add(picByText ? "match" + (hits.Count == 1 ? "" : "es") : "alike", false);
+            add(hits.Count.ToString("N0"), true); add(picKind == PicWords ? "match" + (hits.Count == 1 ? "" : "es") : "alike", false);
             if (HiddenPictures > 0) { add(HiddenPictures.ToString("N0"), true); add("not alike (hidden)", false); }
         }
 
@@ -1306,7 +1494,7 @@ namespace FindAnything.App
             }
             else
             {
-                results.EmptyTitle = picByText ? "Nothing here matches that description" : "Nothing here looks like your sample";
+                results.EmptyTitle = picKind == PicWords ? "Nothing here matches that description" : "Nothing here looks like your sample";
                 results.EmptyText = allPictures.Count.ToString("N0") + " pictures checked. Turn on Show weaker matches to see the closest ones anyway.";
             }
         }
@@ -1322,7 +1510,10 @@ namespace FindAnything.App
             List<FileHit> byScore = new List<FileHit>(hits);
             byScore.Sort(best);
             for (int i = 0; i < byScore.Count; i++) byScore[i].FirstLine = i + 1;
-            if (byScore.Count > 0) { results.ScoreHigh = byScore[0].Score; results.ScoreLow = byScore[byScore.Count - 1].Score; }
+            // the bar spans the alike pictures only (rows that do not look alike show "not alike" instead)
+            int lastAlike = byScore.Count - 1;
+            while (lastAlike > 0 && byScore[lastAlike].Weak) lastAlike--;
+            if (byScore.Count > 0) { results.ScoreHigh = byScore[0].Score; results.ScoreLow = byScore[Math.Max(0, lastAlike)].Score; }
             if (results.SortColumn < 0) hits.Sort(best);
             else SortHits();
         }
@@ -1337,7 +1528,7 @@ namespace FindAnything.App
             try
             {
                 SaveSettings();
-                Process.Start(new ProcessStartInfo(Application.ExecutablePath, "--drive-check") { UseShellExecute = true, Verb = "runas" });
+                Process.Start(new ProcessStartInfo(Application.ExecutablePath, mode == 4 ? "--deleted" : "--drive-check") { UseShellExecute = true, Verb = "runas" });
                 Close();
             }
             catch (System.ComponentModel.Win32Exception) { }   // the permission prompt was declined

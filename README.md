@@ -11,21 +11,27 @@ model for Similar pictures.
 
 ![The viewer: any file size, every match highlighted](docs/screenshot-viewer.png)
 
-## Four modes
+## Five modes
 
 **Search text** finds any text inside any file, with the extras below.
 
-**Find keys** finds the product keys, licenses, serial numbers, passwords, PINs and tokens you stashed in a text file
-months ago, without you typing anything. It also reads documents and pictures of license stickers. Each key gets its
-own row; right-click it and choose **Copy the key**. Type a word to narrow the list to keys near it (Office, Adobe).
+**Sensitive data** is a security sweep: it finds what should not be lying around in plain files, rates each finding
+**high / medium / low**, and says what to do about it. Passwords and PINs, API tokens (GitHub, AWS, Google, Stripe,
+Slack, OpenAI, Anthropic...), private keys, card numbers and SSNs inside files, documents and pictures (OCR); and
+**credential files** by what they are - SSH and PuTTY keys, `.env` files, Git and AWS credentials, registry logins,
+certificates with private keys, VPN and Remote Desktop files, password vaults, crypto wallets. Anything in a
+cloud-synced folder (OneDrive, Dropbox, Google Drive) rates one level worse. Values are masked on screen and in CSV
+exports unless you turn on **Show values**; **Copy the key** still copies the real one. Licence keys and serials are
+there too, rated low, for finding the ones you stashed away.
 
-![Find keys: product keys, serials, passwords and tokens, including one read off a photo](docs/screenshot-keys.png)
+![Sensitive data: findings rated high and low, with what to do, values masked](docs/screenshot-sensitive.png)
 
 **Similar pictures** finds photos that look like the one you have. Press **Pick samples** (the Polaroid of Grandma,
 the dog these tests were run on) or drop a sample picture, or several of the same thing, and you get the pictures in the
 folder that really look alike, closest first. Pictures that do not look alike are left out (**Show weaker matches**
-lists them too). Or describe it instead: `a dog in a costume`, `a receipt`, `the beach at sunset`. Right-click any
-picture result, or a picture in Explorer, and choose **Find similar pictures**.
+lists them too). Or describe it instead: `a dog in a costume`, `a receipt`, `the beach at sunset`. Or both: samples
+**and** words keep the look-alikes and rank them by the words (her photo + "wearing a costume" puts the costume
+photos first). Right-click any picture result, or a picture in Explorer, and choose **Find similar pictures**.
 
 ![Similar pictures: Windows wallpapers ranked for "a lake with mountains"](docs/screenshot-similar.png)
 
@@ -44,8 +50,11 @@ runs at below-normal priority so the PC stays responsive. Measured on an i7-1290
 |---|---|---|---|
 | 1 | 10 | 0.8 | 86 ms |
 | 6 (default here) | 57 | 4.4 | 78 ms |
-| 24 | 100 | 17.9 | 179 ms | **Remember fingerprints** (off by default) keeps each picture's fingerprint in
-`%LOCALAPPDATA%\FindAnything\pictures` so repeat searches skip the work; turning it off deletes them.
+| 24 | 100 | 17.9 | 179 ms |
+
+The same slider sets how many files the text search reads at once and how many pictures OCR reads at once.
+**Remember fingerprints** (off by default) keeps each picture's fingerprint in `%LOCALAPPDATA%\FindAnything\pictures` so
+repeat searches skip the work; turning it off deletes them.
 
 How well does it work? Measured on 22 photos of one dog and 242 unrelated pictures (photos of people and
 rooms, and Windows wallpapers), using every dog photo as the sample in turn:
@@ -58,6 +67,17 @@ rooms, and Windows wallpapers), using every dog photo as the sample in turn:
 So the cut-off sits at 0.25: 99.6% of the same-dog pairs score above 0.30, and no unrelated picture came near it.
 A first try with CLIP alone ranked a photo of a child second for a photo of the dog (CLIP saw "a close-up face on a
 couch" in both); DINOv2 scores that photo 0.12.
+
+**Deleted files** finds files that were deleted, and gets them back. It reads the drive's NTFS file table directly
+(read-only, so nothing on the drive changes), lists each deleted file with its original folder and whether it can still
+be recovered - its space untouched, partly reused by other files, overwritten, or erased - plus whatever is in the
+Recycle Bin. Double-click to preview; **Recover to a folder...** asks once per session, warns if that folder is on the
+same drive (writing there can overwrite what you are trying to save), and then recovers the rest in one click. Tested
+on a real NTFS volume: deleted files came back byte-for-byte identical. On an SSD, Windows usually tells the drive to
+erase freed space (TRIM), so many deleted files there read as zeros; they are marked ERASED instead of promised. It
+needs administrator rights.
+
+![Deleted files: what can be recovered, and the Recycle Bin](docs/screenshot-deleted.png)
 
 **Drive check** reads a whole drive, every sector and read-only, before you sell or give it away. It tells you how
 much of the drive still holds data (a wiped drive is all zeros) and lists every place a text of yours still appears,
@@ -140,6 +160,10 @@ Nothing is ever loaded whole.
 | Esc | Stop the search |
 | Double-click or Enter on a result | Open it in the viewer with matches highlighted |
 | Right-click a result | Open with its usual program, open in Notepad++ at the line, show in folder, copy path, save the list as CSV |
+| Ctrl+A, then right-click | **Copy (N) to a folder...** or **Move (N) to a folder...** - names already there get " (2)", nothing is overwritten. After the first time, **Copy to "that folder"** is one click |
+| Ctrl+Shift+C | Copy the selected files, to paste in Explorer |
+| Drag selected rows out | Drop the files in Explorer, an email, a chat |
+| Switch tabs | Each tab keeps its own search box |
 | Click a column header | Sort by it |
 | Drop a folder on the window | Set *Look in* (in Similar pictures, dropped pictures become the samples) |
 | `C:\;D:\` in *Look in*, or pick `(all drives)` | Search several places |
@@ -178,12 +202,13 @@ skipped.
 src/Core/   search engine: BytePattern (wildcard matcher), Scanner (streaming), SearchJob (folders, threads),
             DocText (Office/ODF), PdfDoc + PdfText + PdfLexer (PDF reader), LongPath,
             Secrets (key/serial/password detectors), Ocr (Windows OCR + cache), RawDisk (drive check),
-            Ort (ONNX Runtime C API by P/Invoke), Clip (DINOv2 + CLIP fingerprints, CLIP tokenizer), PictureSearch
+            Ort (ONNX Runtime C API by P/Invoke), Clip (DINOv2 + CLIP fingerprints, CLIP tokenizer), PictureSearch,
+            Ntfs (deleted files from the MFT), RecycleBin, FileOps (bulk copy / move)
 src/App/    window, results list, viewer, About box; Skin.cs (theme, 9-sliced sprites, custom controls); skin/*.png
 src/Setup/  installer and uninstaller (one exe; the app and LICENSE are embedded in it)
 src/AppInfo.cs  version, credits and file details shared by both exes
 tools/      explorer-menu.ps1 (right-click menu for a copy run without the installer)
-tests/      Tests.cs (131 checks), make_pdfs.py (test PDFs from PyMuPDF and reportlab)
+tests/      Tests.cs (146 checks), make_pdfs.py (test PDFs from PyMuPDF and reportlab)
 design/     icon concepts, the app icon source (SVG), and the UI design (ui/main.html mockup, ui/sprites.html skin)
 docs/       README screenshots
 ```
@@ -195,7 +220,10 @@ docs/       README screenshots
 - Text inside ZIP, 7z or ISO archives and inside email stores is not searched, apart from the Office formats above.
 - PDFs larger than 512 MB are searched as raw bytes instead of being parsed.
 - OCR needs a Windows language with text recognition (English has it). OCR reads up to 40 pages of a scanned PDF.
-- Find keys works by patterns, so it can miss a key written in an unusual way and list a code that only looks like a key.
+- Sensitive data works by patterns and file names, so it can miss a secret written in an unusual way (or a renamed
+  key file) and list a code that only looks like a key. Its severities are judgement calls.
+- Deleted files reads NTFS only (not FAT or exFAT USB sticks). Files whose data map spills into extra MFT records are
+  skipped, and a deleted file's folder shows as "(unknown folder)" when that folder's record has been reused.
 - A crypto-erased drive can read as random data, so Drive check reports it as holding data even though it is wiped.
 - Similar pictures matches by look, not identity: a dog of the same breed and colouring can count as alike. Several
   sample pictures help (a picture only has to look like one of them). Descriptions work best in plain English, and
