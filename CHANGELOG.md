@@ -5,6 +5,13 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [2026.10.12.4] - 2026-10-12
+
+### Changed
+- The **CPU use** slider now drives the regular text search too and replaces the Threads box under Filters: it
+  sets how many files are searched at once, is always shown in Search text and Find keys, applies mid-search, and
+  file searching runs at below-normal priority. The old Threads setting is dropped in favour of `CpuUse`.
+
 ## [2026.10.12.3] - 2026-10-12
 
 ### Added

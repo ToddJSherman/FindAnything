@@ -63,7 +63,6 @@ namespace FindAnything.App
         private readonly SkinField excludeTypes = new SkinField(FieldStyle.Mini, null);
         private readonly SkinField skipFolders = new SkinField(FieldStyle.Mini, null);
         private readonly SkinField maxMb = new SkinField(FieldStyle.Mini, null);
-        private readonly SkinField threads = new SkinField(FieldStyle.Mini, null);
         private readonly List<int> separatorsX = new List<int>();
         private readonly List<int> separatorsY = new List<int>();
         private readonly List<KeyValuePair<string, Rectangle>> miniLabels = new List<KeyValuePair<string, Rectangle>>();
@@ -152,7 +151,6 @@ namespace FindAnything.App
             Tip(excludeTypes, "Never search these types, for example  *.exe;*.dll;*.iso");
             Tip(skipFolders, "Folder names to skip, separated by ;   Wildcards work:  node_modules;.git;*cache*");
             Tip(maxMb, "Skip files bigger than this many MB. 0 = no limit. Big files never fill memory either way.");
-            Tip(threads, "Files searched at the same time. 4-8 suits SSDs; use 1-2 for spinning drives.");
 
             tick.Interval = 120;
             tick.Tick += OnTick;
@@ -223,9 +221,9 @@ namespace FindAnything.App
                     status.SetParts(parts.ToArray(), bold.ToArray());
                 }
             };
-            Tip(cpuSlider, "How hard the heavy work runs: reading pictures for Similar pictures, and OCR.\n" +
-                           "Left: one picture at a time on one CPU thread - cool and quiet, slower. Right: every thread - fastest, and the fans will know.\n" +
-                           "Takes effect at once, even during a search. This work always runs at low priority, so the PC stays responsive.");
+            Tip(cpuSlider, "How hard a search works the processor: how many files (and pictures for OCR or Similar pictures) are read at once.\n" +
+                           "Left: one at a time on one CPU thread - cool and quiet, slower. Right: every thread - fastest, and the fans will know.\n" +
+                           "On a spinning hard drive, 1-2 is often fastest. Takes effect at once, even during a search, and always runs at low priority.");
             cpuSlider.Scrolling += delegate { OnCpuSlider(); };
             cpuSlider.Committed += delegate { OnCpuSlider(); settings.Set("CpuUse", CpuWorkers); };
             ocr.CheckedChanged += delegate { LayoutHero(); };
@@ -256,9 +254,9 @@ namespace FindAnything.App
             excludeTypes.SetPlaceholder("*.exe; *.iso");
             skipFolders.SetPlaceholder("Folder names");
             maxMb.SetPlaceholder("0 = no limit");
-            foreach (SkinField f in new[] { maxMb, threads })
+            foreach (SkinField f in new[] { maxMb })
                 f.Box.KeyPress += delegate(object s, KeyPressEventArgs e) { if (!char.IsControl(e.KeyChar) && !char.IsDigit(e.KeyChar)) e.Handled = true; };
-            foreach (SkinField f in new[] { types, excludeTypes, skipFolders, maxMb, threads })
+            foreach (SkinField f in new[] { types, excludeTypes, skipFolders, maxMb })
                 f.Box.KeyDown += delegate(object s, KeyEventArgs e) { if (e.KeyCode == Keys.Enter) { e.SuppressKeyPress = true; StartSearch(); } };
 
             Tip(loose, "Ignore spaces, dashes and case, and treat O/0 and I/l/1 alike:  H6056  also finds  H-6056,  h 6056,  H6O56.");
@@ -285,7 +283,7 @@ namespace FindAnything.App
                 findField, lookField, browseButton, aboutButton, modeTabs,
                 matchCase, wholeWord, wildcards, loose, inContents, inNames, insideDocs, utf16, ocr, onlyPics, ocrCache,
                 clipCache, weaker, cpuSlider, kProduct, kLabeled, kPasswords, kTokens, kFinancial, filtersChip,
-                types, excludeTypes, skipFolders, maxMb, threads
+                types, excludeTypes, skipFolders, maxMb
             });
             // Last in z-order: the Search button's glow sits under its neighbours instead of erasing their edges.
             hero.Controls.Add(pickSamples);
@@ -392,7 +390,7 @@ namespace FindAnything.App
             }
             // CPU use, for the heavy work (Similar pictures; OCR when it is on): right end of the last chip row, or a
             // row of its own when that row is full
-            bool cpu = mode == 3 || ((mode == 0 || mode == 1) && ocr.Checked);
+            bool cpu = mode != 2;
             cpuSlider.Visible = cpu;
             cpuLabelRect = cpuValueRect = Rectangle.Empty;
             if (cpu)
@@ -410,19 +408,19 @@ namespace FindAnything.App
             // filters
             miniLabels.Clear();
             bool show = filtersChip.Checked && filters;
-            foreach (SkinField f in new[] { types, excludeTypes, skipFolders, maxMb, threads }) f.Visible = show;
+            foreach (SkinField f in new[] { types, excludeTypes, skipFolders, maxMb }) f.Visible = show;
             if (show)
             {
                 y += Theme.S(12);
                 int labelH = Theme.S(18), boxH = Theme.S(34), gap = Theme.S(10);
-                int fixedW = Theme.S(130) + Theme.S(84) + 4 * gap;
+                int fixedW = Theme.S(130) + 3 * gap;
                 int flex = Math.Max(Theme.S(300), R - L - fixedW);
-                int[] widths = { (int)(flex * 0.37), (int)(flex * 0.24), 0, Theme.S(130), Theme.S(84) };
+                int[] widths = { (int)(flex * 0.38), (int)(flex * 0.25), 0, Theme.S(130) };
                 widths[2] = flex - widths[0] - widths[1];
-                string[] labels = { "File types", "Except", "Skip folders", "Max size (MB)", "Threads" };
-                SkinField[] boxes = { types, excludeTypes, skipFolders, maxMb, threads };
+                string[] labels = { "File types", "Except", "Skip folders", "Max size (MB)" };
+                SkinField[] boxes = { types, excludeTypes, skipFolders, maxMb };
                 x = L;
-                for (int i = 0; i < 5; i++)
+                for (int i = 0; i < boxes.Length; i++)
                 {
                     miniLabels.Add(new KeyValuePair<string, Rectangle>(labels[i], new Rectangle(x + Theme.S(1), y, widths[i], labelH)));
                     Place(boxes[i], new Rectangle(x, y + labelH + Theme.S(5), widths[i], boxH), boxes[i].ShadowPad);
@@ -446,6 +444,7 @@ namespace FindAnything.App
         private void OnCpuSlider()
         {
             if (picSearch != null) picSearch.Workers = CpuWorkers;
+            if (job != null) job.Workers = CpuWorkers;
             Ocr.MaxAtOnce = CpuWorkers;
             hero.Invalidate(cpuValueRect);
         }
@@ -690,7 +689,7 @@ namespace FindAnything.App
             utf16.Checked = settings.GetBool("Utf16", true);
             skipFolders.Text = settings.Get("SkipFolders", "System Volume Information;$Recycle.Bin");
             maxMb.Text = Math.Max(0, settings.GetLong("MaxMB", 0)).ToString();
-            threads.Text = Math.Min(32, Math.Max(1, settings.GetLong("Threads", Math.Min(8, Environment.ProcessorCount / 2)))).ToString();
+            settings.Remove("Threads");   // the CPU use slider took over from the Threads box
             filtersChip.Checked = settings.GetBool("ShowFilters", false) || types.Text.Length > 0 || excludeTypes.Text.Length > 0;
         }
 
@@ -719,7 +718,6 @@ namespace FindAnything.App
             settings.Set("Utf16", utf16.Checked);
             settings.Set("SkipFolders", skipFolders.Text);
             settings.Set("MaxMB", ParseLong(maxMb.Text, 0));
-            settings.Set("Threads", Math.Max(1, ParseLong(threads.Text, 4)));
             settings.Set("ShowFilters", filtersChip.Checked);
             settings.Save();
         }
@@ -830,7 +828,7 @@ namespace FindAnything.App
             s.LookInsideDocuments = insideDocs.Checked;
             s.Utf16 = utf16.Checked;
             s.MaxFileBytes = ParseLong(maxMb.Text, 0) * 1024 * 1024;
-            s.Threads = (int)Math.Min(32, Math.Max(1, ParseLong(threads.Text, 4)));
+            s.Threads = CpuWorkers;
             s.Loose = mode == 0 && loose.Checked;
             s.Ocr = ocr.Checked;
             if (mode == 1)

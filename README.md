@@ -80,7 +80,7 @@ text of your pictures is stored on your PC. Turning it off deletes what was stor
 
 OCR makes mistakes: it can read an H as `1-1` or an m as `rn`. Turn on **Loose** and the search shrugs those off.
 
-**CPU use** (shown while Pictures (OCR) is on) sets how many pictures are read at once. Windows OCR uses one CPU thread
+**CPU use** (next to the search options) sets how many files are searched, and pictures OCR'd, at once. Windows OCR uses one CPU thread
 per picture, so it is the CPU budget: on an i7-12900K, 1 at a time reads about 9 text-heavy pictures a second with less
 than one thread busy, 8 at a time about 69 a second with 6 threads busy. Plain files are not held back, OCR runs at
 below-normal priority, and the setting is shared with Similar pictures and takes effect immediately.
@@ -114,7 +114,9 @@ Requires Windows 10 or 11, which already include the .NET Framework 4.8 it needs
   search misses it. The PDF reader is built in and handles compressed and encrypted PDFs (the kind that open without
   a password). Scanned PDFs are pictures of text, so they have nothing to find. They are listed under *notes*.
 - **Unicode (UTF-16) text**: Notepad "Unicode" files, old `.doc` files, and strings inside programs.
-- **Skip folders** by name (wildcards allowed), skip files over a size, and set how many files are searched at once.
+- **Skip folders** by name (wildcards allowed) and skip files over a size.
+- **CPU use** slider: how many files are searched at once, from 1 (cool and quiet; often fastest on a spinning hard
+  drive) to every CPU thread. Changes apply mid-search, and searching runs at below-normal priority.
 - **OneDrive online-only files are skipped**, so a search never downloads your cloud files.
 - **Paths longer than 260 characters** work without changing any Windows setting.
 

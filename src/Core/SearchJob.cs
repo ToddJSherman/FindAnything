@@ -78,10 +78,18 @@ namespace FindAnything.Core
 
         public Scanner Scanner { get { return scanner; } }
 
+        /// <summary>Files searched at once (the CPU use slider). Can change while the search runs.</summary>
+        public volatile int Workers;
+        private int working;
+        private readonly object gate = new object();
+
         public void Run(CancellationToken ct)
         {
+            // Up to every CPU thread may take files, but only Workers of them work at a time (the CPU use slider, which
+            // can change mid-search); the others wait without using the CPU. The work runs at below-normal priority.
+            if (Workers < 1) Workers = Math.Max(1, set.Threads);
             ParallelOptions po = new ParallelOptions();
-            po.MaxDegreeOfParallelism = Math.Max(1, set.Threads);
+            po.MaxDegreeOfParallelism = Math.Max(Math.Max(1, set.Threads), Environment.ProcessorCount);
             po.CancellationToken = ct;
             try
             {
@@ -91,7 +99,19 @@ namespace FindAnything.Core
                     delegate { return scanner != null ? scanner.NewBuffer() : null; },
                     delegate(FileInfo fi, ParallelLoopState state, byte[] buf)
                     {
-                        ProcessFile(fi, buf, ct);
+                        lock (gate)
+                        {
+                            while (working >= Workers && !ct.IsCancellationRequested) Monitor.Wait(gate, 250);
+                            working++;
+                        }
+                        ThreadPriority old = Thread.CurrentThread.Priority;
+                        Thread.CurrentThread.Priority = ThreadPriority.BelowNormal;
+                        try { ProcessFile(fi, buf, ct); }
+                        finally
+                        {
+                            Thread.CurrentThread.Priority = old;
+                            lock (gate) { working--; Monitor.PulseAll(gate); }
+                        }
                         return buf;
                     },
                     delegate(byte[] buf) { });

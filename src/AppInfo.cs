@@ -11,7 +11,7 @@ namespace FindAnything
 {
     internal static class AppInfo
     {
-        public const string Version = "2026.10.12.3";
+        public const string Version = "2026.10.12.4";
         public const string Name = "Find Anything";
         public const string Author = "Todd J Sherman";
         public const string Url = "https://github.com/ToddJSherman/FindAnything";
