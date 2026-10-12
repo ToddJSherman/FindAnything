@@ -21,24 +21,34 @@ own row; right-click it and choose **Copy the key**. Type a word to narrow the l
 
 ![Find keys: product keys, serials, passwords and tokens, including one read off a photo](docs/screenshot-keys.png)
 
-**Similar pictures** finds photos by what is in them. Press **Pick samples** (the Polaroid of Grandma, the dog these
-tests were run on) or drop a sample picture, or several of the same thing,
-and every picture in the folder is ranked by how alike it looks. Or describe it instead: `a dog in a costume`,
-`a receipt`, `the beach at sunset`. Right-click any picture result, or a picture in Explorer, and choose **Find similar
-pictures**.
+**Similar pictures** finds photos that look like the one you have. Press **Pick samples** (the Polaroid of Grandma,
+the dog these tests were run on) or drop a sample picture, or several of the same thing, and you get the pictures in the
+folder that really look alike, closest first. Pictures that do not look alike are left out (**Show weaker matches**
+lists them too). Or describe it instead: `a dog in a costume`, `a receipt`, `the beach at sunset`. Right-click any
+picture result, or a picture in Explorer, and choose **Find similar pictures**.
 
 ![Similar pictures: Windows wallpapers ranked for "a lake with mountains"](docs/screenshot-similar.png)
 
-It uses OpenAI's CLIP model (ViT-B/32, 8-bit) through Microsoft's ONNX Runtime, on the CPU, so it needs no graphics
-card. The model is not in the installer: the first time you use this mode, the app asks, then downloads it once
-(117 MB, from this project's releases, checked against a pinned SHA-256) into `%LOCALAPPDATA%\FindAnything\ai`. After
-that it works offline and nothing about your pictures leaves your PC. Speed on a desktop CPU (i7-12900K) is about 40
-pictures a second; a laptop is slower. **Remember fingerprints** (off by default) keeps each picture's 512-number
-fingerprint in `%LOCALAPPDATA%\FindAnything\pictures` so repeat searches skip the work; turning it off deletes them.
+Two models do the work, both 8-bit, through Microsoft's ONNX Runtime on the CPU, so no graphics card is needed. A
+sample picture is matched by Meta's **DINOv2** (small), which judges how pictures *look*: the same dog, the same
+place. A description is matched by OpenAI's **CLIP** (ViT-B/32), which connects words to pictures. The models are not
+in the installer: the first time you use this mode, the app asks, then downloads them once (137 MB, from this
+project's releases, checked against a pinned SHA-256) into `%LOCALAPPDATA%\FindAnything\ai`. After that it works
+offline and nothing about your pictures leaves your PC. Speed on a desktop CPU (i7-12900K) is about 75 pictures a
+second; a laptop is slower. **Remember fingerprints** (off by default) keeps each picture's fingerprint in
+`%LOCALAPPDATA%\FindAnything\pictures` so repeat searches skip the work; turning it off deletes them.
 
-How well does it work? Tested with 19 photos of one dog scattered through folders among 48 other pictures (20 other
-dogs, many of the same breed, and 28 Windows wallpapers): one sample photo, not in the set, put all 19 in the top 27.
-The 8 others in that stretch were all dogs, 7 of them the same breed. It finds "this kind of picture" very well; telling one dog from its look-alike is harder.
+How well does it work? Measured on 22 photos of one dog and 242 unrelated pictures (photos of people and
+rooms, and Windows wallpapers), using every dog photo as the sample in turn:
+
+| | Unrelated pictures ranked above the dog's worst photo | Highest unrelated score | Dog photos, low end |
+|---|---|---|---|
+| CLIP (the first version) | 9.7 on average | 0.75 | 0.66 |
+| DINOv2 (now) | **none** | 0.22 | 0.35 |
+
+So the cut-off sits at 0.25: 99.6% of the same-dog pairs score above 0.30, and no unrelated picture came near it.
+A first try with CLIP alone ranked a photo of a child second for a photo of the dog (CLIP saw "a close-up face on a
+couch" in both); DINOv2 scores that photo 0.12.
 
 **Drive check** reads a whole drive, every sector and read-only, before you sell or give it away. It tells you how
 much of the drive still holds data (a wiped drive is all zeros) and lists every place a text of yours still appears,
@@ -152,7 +162,7 @@ skipped.
 src/Core/   search engine: BytePattern (wildcard matcher), Scanner (streaming), SearchJob (folders, threads),
             DocText (Office/ODF), PdfDoc + PdfText + PdfLexer (PDF reader), LongPath,
             Secrets (key/serial/password detectors), Ocr (Windows OCR + cache), RawDisk (drive check),
-            Ort (ONNX Runtime C API by P/Invoke), Clip (picture/text fingerprints, CLIP tokenizer), PictureSearch
+            Ort (ONNX Runtime C API by P/Invoke), Clip (DINOv2 + CLIP fingerprints, CLIP tokenizer), PictureSearch
 src/App/    window, results list, viewer, About box; Skin.cs (theme, 9-sliced sprites, custom controls); skin/*.png
 src/Setup/  installer and uninstaller (one exe; the app and LICENSE are embedded in it)
 src/AppInfo.cs  version, credits and file details shared by both exes
@@ -171,18 +181,19 @@ docs/       README screenshots
 - OCR needs a Windows language with text recognition (English has it). OCR reads up to 40 pages of a scanned PDF.
 - Find keys works by patterns, so it can miss a key written in an unusual way and list a code that only looks like a key.
 - A crypto-erased drive can read as random data, so Drive check reports it as holding data even though it is wiped.
-- Similar pictures ranks by overall look and content, not identity: other dogs of the same breed, or another beach,
-  can rank close to yours. Several sample pictures help. Descriptions work best in plain English.
+- Similar pictures matches by look, not identity: a dog of the same breed and colouring can count as alike. Several
+  sample pictures help (a picture only has to look like one of them). Descriptions work best in plain English, and
+  their cut-off is relative (the top band of scores), because CLIP's text scores are not comparable between sentences.
 
 ## Credits
 
 Created by **Todd J Sherman** ([@ToddJSherman](https://github.com/ToddJSherman)).
 
 The search engine, PDF reader, viewer and installer are written from scratch in C#, with no third-party libraries.
-The optional Similar pictures download contains third-party files, unchanged and under their own MIT licenses (their
-license texts are in the download): Microsoft [ONNX Runtime](https://github.com/microsoft/onnxruntime) 1.20.1 and
-OpenAI [CLIP](https://github.com/openai/CLIP) ViT-B/32 in the 8-bit ONNX export by
-[Xenova](https://huggingface.co/Xenova/clip-vit-base-patch32). The app calls ONNX Runtime's C API directly and turns
+The optional Similar pictures download contains third-party files, unchanged and under their own licenses (the license
+texts are in the download): Microsoft [ONNX Runtime](https://github.com/microsoft/onnxruntime) 1.20.1 (MIT), Meta
+[DINOv2](https://github.com/facebookresearch/dinov2)-small (Apache 2.0) and OpenAI [CLIP](https://github.com/openai/CLIP)
+ViT-B/32 (MIT), both in the 8-bit ONNX exports by [Xenova](https://huggingface.co/Xenova). The app calls ONNX Runtime's C API directly and turns
 its usage events off.
 The look was designed in HTML/CSS (`design/ui/main.html`). Small animations (hover fades, the sliding mode tab, results
 and thumbnails fading in) run on one shared timer and switch off when Windows' *Animation effects* setting is off. `tools/make-skin.ps1` renders its controls and cuts them into

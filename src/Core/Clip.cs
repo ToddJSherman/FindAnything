@@ -12,8 +12,9 @@ using Windows.Storage.Streams;
 namespace FindAnything.Core
 {
     /// <summary>
-    /// Picture similarity with OpenAI's CLIP (ViT-B/32, 8-bit): every picture becomes 512 numbers that describe what is
-    /// in it, and so does a sentence. Pictures whose numbers point the same way look alike. Runs on the CPU through
+    /// Picture similarity. OpenAI's CLIP (ViT-B/32, 8-bit) turns a picture or a sentence into 512 numbers describing
+    /// what is in it, which is how a description finds pictures. Meta's DINOv2-small turns a picture into 384 numbers
+    /// describing how it looks, which is how a sample finds look-alikes. Numbers pointing the same way = alike. Runs on the CPU through
     /// ONNX Runtime; the model files live in %LOCALAPPDATA%\FindAnything\ai (downloaded once, with permission).
     /// </summary>
     public sealed class Clip : IDisposable
@@ -28,7 +29,19 @@ namespace FindAnything.Core
             get { return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "FindAnything", "ai"); }
         }
 
-        public static readonly string[] Files = { "onnxruntime.dll", "vision_model_quantized.onnx", "text_model_quantized.onnx", "vocab.json", "merges.txt" };
+        public static readonly string[] Files = { "onnxruntime.dll", "vision_model_quantized.onnx", "text_model_quantized.onnx", "vocab.json", "merges.txt", LookModel };
+
+        /// <summary>
+        /// Meta's DINOv2-small (8-bit): judges how alike two pictures look (the same dog, the same place) far better
+        /// than CLIP, which judges what kind of picture it is. Used for sample pictures; CLIP stays for descriptions.
+        /// </summary>
+        public const string LookModel = "dinov2_small_quantized.onnx";
+
+        /// <summary>
+        /// Measured cut-offs: one dog's 22 photos against 242 unrelated pictures, every photo as the sample in turn.
+        /// DINOv2: 99.6% of same-dog pairs score 0.30 or more (lowest 0.245); no unrelated picture reached 0.22.
+        /// </summary>
+        public const float LookAlike = 0.25f;
 
         public static bool Installed
         {
@@ -47,10 +60,13 @@ namespace FindAnything.Core
         private Ort.Session text;
         private ClipTokenizer tokenizer;
         private readonly string imageOut;
-        private readonly object textGate = new object();
+        private readonly object textGate = new object(), lookGate = new object();
+        private Ort.Session look;
+        private readonly int threads;
 
         public Clip(int threads)
         {
+            this.threads = threads;
             ort = new Ort(Path.Combine(Folder, "onnxruntime.dll"));
             vision = ort.Open(Path.Combine(Folder, "vision_model_quantized.onnx"), threads);
             imageOut = Pick(vision.Outputs, "image_embeds");
@@ -68,26 +84,52 @@ namespace FindAnything.Core
         /// <summary>The picture's fingerprint (unit length), from the cache when allowed.</summary>
         public float[] EmbedImage(string ioPath)
         {
-            float[] cached = FromCache(ioPath);
+            float[] cached = FromCache(ioPath, "clip");
             if (cached != null) return cached;
             float[] pixels = Preprocess(File.ReadAllBytes(ioPath));
             long[] shape;
             float[] e = ort.Run(vision, new[] { new Ort.Input { Name = vision.Inputs[0], Floats = pixels, Shape = new long[] { 1, 3, Side, Side } } }, imageOut, out shape);
             Normalize(e);
-            ToCache(ioPath, e);
+            ToCache(ioPath, "clip", e);
             return e;
         }
 
+        private static readonly float[] ImageNetMean = { 0.485f, 0.456f, 0.406f }, ImageNetStd = { 0.229f, 0.224f, 0.225f };
+
         /// <summary>
-        /// CLIP's preparation: shortest side to 224 (Windows' decoder does the resampling, upright per EXIF), centre crop
-        /// 224 x 224, RGB scaled to 0..1, then normalised with CLIP's per-channel mean and spread.
+        /// How the picture looks, as DINOv2-small sees it: the class token of its last layer, unit length. Its
+        /// preparation: shortest side 256, centre crop 224, ImageNet mean and spread.
         /// </summary>
-        public static float[] Preprocess(byte[] file)
+        public float[] EmbedLook(string ioPath)
+        {
+            float[] cached = FromCache(ioPath, "look");
+            if (cached != null) return cached;
+            lock (lookGate)
+                if (look == null) look = ort.Open(Path.Combine(Folder, LookModel), threads);
+            float[] pixels = Preprocess(File.ReadAllBytes(ioPath), 256, ImageNetMean, ImageNetStd);
+            long[] shape;
+            float[] hidden = ort.Run(look, new[] { new Ort.Input { Name = look.Inputs[0], Floats = pixels, Shape = new long[] { 1, 3, Side, Side } } }, look.Outputs[0], out shape);
+            int width = (int)shape[shape.Length - 1];
+            float[] e = new float[width];
+            Array.Copy(hidden, e, width);   // token 0 is the class token
+            Normalize(e);
+            ToCache(ioPath, "look", e);
+            return e;
+        }
+
+        /// <summary>CLIP's preparation (see the overload).</summary>
+        public static float[] Preprocess(byte[] file) { return Preprocess(file, Side, Mean, Std); }
+
+        /// <summary>
+        /// Shortest side to 'resize' (Windows' decoder does the resampling, upright per EXIF), centre crop 224 x 224,
+        /// RGB scaled to 0..1, then normalised with the model's per-channel mean and spread.
+        /// </summary>
+        public static float[] Preprocess(byte[] file, int resize, float[] mean, float[] std)
         {
             BitmapDecoder dec = WinRt.Wait(BitmapDecoder.CreateAsync(WinRt.ToStream(file)));
             uint ow = dec.OrientedPixelWidth, oh = dec.OrientedPixelHeight;
-            double k = (double)Side / Math.Min(ow, oh);
-            uint sw = (uint)Math.Max(Side, Math.Round(ow * k)), sh = (uint)Math.Max(Side, Math.Round(oh * k));
+            double k = (double)resize / Math.Min(ow, oh);
+            uint sw = (uint)Math.Max(resize, Math.Round(ow * k)), sh = (uint)Math.Max(resize, Math.Round(oh * k));
             bool turned = ow != dec.PixelWidth;   // EXIF 90/270: the transform is given in stored (unturned) dimensions
             BitmapTransform tr = new BitmapTransform();
             tr.ScaledWidth = turned ? sh : sw;
@@ -104,7 +146,7 @@ namespace FindAnything.Core
                 {
                     int s = ((y0 + y) * w + (x0 + x)) * 4;
                     int d = y * Side + x;
-                    for (int c = 0; c < 3; c++) o[c * Side * Side + d] = (rgba[s + c] / 255f - Mean[c]) / Std[c];
+                    for (int c = 0; c < 3; c++) o[c * Side * Side + d] = (rgba[s + c] / 255f - mean[c]) / std[c];
                 }
             return o;
         }
@@ -163,10 +205,10 @@ namespace FindAnything.Core
             try { if (Directory.Exists(CacheFolder)) Directory.Delete(CacheFolder, true); } catch (Exception) { }
         }
 
-        private static string CachePath(string ioPath)
+        private static string CachePath(string ioPath, string model)
         {
             FileInfo fi = new FileInfo(ioPath);
-            string key = LongPath.Strip(fi.FullName).ToLowerInvariant() + "|" + fi.Length + "|" + fi.LastWriteTimeUtc.Ticks;
+            string key = model + "|" + LongPath.Strip(fi.FullName).ToLowerInvariant() + "|" + fi.Length + "|" + fi.LastWriteTimeUtc.Ticks;
             using (SHA1 sha = SHA1.Create())
             {
                 StringBuilder sb = new StringBuilder();
@@ -175,30 +217,30 @@ namespace FindAnything.Core
             }
         }
 
-        private static float[] FromCache(string ioPath)
+        private static float[] FromCache(string ioPath, string model)
         {
             if (!UseCache) return null;
             try
             {
-                string p = CachePath(ioPath);
+                string p = CachePath(ioPath, model);
                 if (!File.Exists(p)) return null;
                 byte[] b = File.ReadAllBytes(p);
-                if (b.Length != Dim * 4) return null;
-                float[] e = new float[Dim];
+                if (b.Length == 0 || b.Length % 4 != 0 || b.Length > 4096) return null;
+                float[] e = new float[b.Length / 4];
                 System.Buffer.BlockCopy(b, 0, e, 0, b.Length);
                 return e;
             }
             catch (Exception) { return null; }
         }
 
-        private static void ToCache(string ioPath, float[] e)
+        private static void ToCache(string ioPath, string model, float[] e)
         {
-            if (!UseCache || e.Length != Dim) return;
+            if (!UseCache || e.Length == 0) return;
             try
             {
-                string p = CachePath(ioPath);
+                string p = CachePath(ioPath, model);
                 Directory.CreateDirectory(Path.GetDirectoryName(p));
-                byte[] b = new byte[Dim * 4];
+                byte[] b = new byte[e.Length * 4];
                 System.Buffer.BlockCopy(e, 0, b, 0, b.Length);
                 File.WriteAllBytes(p, b);
             }
@@ -209,6 +251,7 @@ namespace FindAnything.Core
         {
             ort.Close(vision);
             ort.Close(text);
+            ort.Close(look);
             ort.Dispose();
         }
     }

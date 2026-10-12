@@ -5,6 +5,21 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [2026.10.12] - 2026-10-12
+
+### Changed
+- **Similar pictures now matches sample pictures with Meta's DINOv2-small** instead of CLIP. CLIP judged "what kind of
+  photo" (a close-up face on a couch), so a photo of a dog ranked unrelated photos of people near the top. Measured on one
+  dog's 22 photos against 242 unrelated pictures, every photo as the sample in turn: unrelated pictures ranked above
+  the dog's worst photo went from 9.7 per search (CLIP) to none (DINOv2); the highest unrelated score fell from 0.75
+  to 0.22. It is also faster (about 75 pictures a second on an i7-12900K). Descriptions still use CLIP.
+- Only pictures that really look alike are listed (DINOv2 score 0.25 or more; for descriptions, the top band of
+  scores). The status bar counts the ones left out, and **Show weaker matches** lists every picture, ranked.
+- With several samples, a picture is scored against the sample it is closest to, instead of their average.
+- The picture-model download (pack 2, 137 MB, release `picture-model-2`) adds DINOv2 (Apache 2.0) and its license.
+  Copies with pack 1 are asked once to download pack 2.
+- Remembered fingerprints are kept per model.
+
 ## [2026.10.11.8] - 2026-10-11
 
 ### Changed

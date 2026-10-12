@@ -656,18 +656,15 @@ internal static class Tests
         {
             Console.WriteLine("model loaded in {0} ms", sw.ElapsedMilliseconds);
             sw.Restart();
-            float[] q;
-            if (query.StartsWith("text:")) q = clip.EmbedText(query.Substring(5));
-            else
-            {
-                // several sample pictures (separated by |): average their fingerprints
-                q = new float[FindAnything.Core.Clip.Dim];
-                foreach (string one in query.Split('|')) { float[] e1 = clip.EmbedImage(one); for (int k = 0; k < q.Length; k++) q[k] += e1[k]; }
-            }
+            // a description goes through CLIP; sample pictures (separated by |) through DINOv2, as in the app
+            List<float[]> qs = new List<float[]>();
+            Func<string, float[]> embed;
+            if (query.StartsWith("text:")) { embed = clip.EmbedImage; qs.Add(clip.EmbedText(query.Substring(5))); }
+            else { embed = clip.EmbedLook; foreach (string one in query.Split('|')) qs.Add(clip.EmbedLook(one)); }
             Console.WriteLine("query embedded in {0} ms", sw.ElapsedMilliseconds);
             PictureSearch ps = new PictureSearch(new List<string> { folder }, "", null);
             sw.Restart();
-            ps.Run(clip, q, Math.Max(1, Environment.ProcessorCount / 4), None);
+            ps.Run(embed, qs, Math.Max(1, Environment.ProcessorCount / 4), None);
             double secs = sw.Elapsed.TotalSeconds;
             List<FileHit> hits = new List<FileHit>(ps.Hits);
             hits.Sort(delegate(FileHit a, FileHit b) { return b.Score.CompareTo(a.Score); });
@@ -698,18 +695,35 @@ internal static class Tests
         Swatch(Path.Combine(dir, "sub", "green.jpg"), Color.FromArgb(40, 190, 60), 9);
         File.WriteAllText(Path.Combine(dir, "notes.txt"), "not a picture");
 
+        // a distinctive picture (stripes, a triangle) and the same picture smaller, re-saved as JPEG, as a phone or a
+        // chat app would copy it: the copy must come first, ahead of the plain swatches
+        string original = Path.Combine(work, "pattern.png");
+        using (Bitmap b = new Bitmap(320, 240))
+        using (Graphics g = Graphics.FromImage(b))
+        {
+            g.Clear(Color.FromArgb(245, 240, 225));
+            for (int i = 0; i < 8; i++) using (SolidBrush br = new SolidBrush(i % 2 == 0 ? Color.FromArgb(20, 90, 60) : Color.FromArgb(240, 180, 40))) g.FillRectangle(br, 0, i * 30, 160, 30);
+            using (SolidBrush br = new SolidBrush(Color.FromArgb(120, 40, 140))) g.FillPolygon(br, new[] { new Point(200, 200), new Point(300, 200), new Point(250, 40) });
+            b.Save(original, System.Drawing.Imaging.ImageFormat.Png);
+        }
+        sample = original;
+        using (Image src = Image.FromFile(sample))
+        using (Bitmap small = new Bitmap(src, 200, 150))
+            small.Save(Path.Combine(dir, "sample-copy.jpg"), System.Drawing.Imaging.ImageFormat.Jpeg);
+
         using (FindAnything.Core.Clip clip = new FindAnything.Core.Clip(2))
         {
             PictureSearch ps = new PictureSearch(new List<string> { dir, sample }, "", new[] { sample });
-            ps.Run(clip, clip.EmbedImage(sample), 2, None);
+            ps.Run(clip.EmbedLook, new List<float[]> { clip.EmbedLook(sample) }, 2, None);
             List<FileHit> hits = Ranked(ps);
-            Check("pictures: every picture scored, the sample and text file left out", hits.Count == 3 && ps.Pictures == 4 && ps.ErrorCount == 0, hits.Count + "/" + ps.Pictures);
-            Check("pictures: the red one is most like the red sample", hits.Count > 0 && hits[0].Name == "red.png", hits.Count > 0 ? hits[0].Name : "");
+            Check("pictures: every picture scored, the sample and text file left out", hits.Count == 4 && ps.Pictures == 5 && ps.ErrorCount == 0, hits.Count + "/" + ps.Pictures);
+            Check("pictures: a resized copy of the sample is the closest, above the cut-off",
+                hits.Count > 0 && hits[0].Name == "sample-copy.jpg" && hits[0].Score >= FindAnything.Core.Clip.LookAlike, hits.Count > 0 ? hits[0].Name + " " + hits[0].Score : "");
 
             ps = new PictureSearch(new List<string> { dir }, "", null);
-            ps.Run(clip, clip.EmbedText("a solid blue square"), 2, None);
+            ps.Run(clip.EmbedImage, new List<float[]> { clip.EmbedText("a solid blue square") }, 2, None);
             hits = Ranked(ps);
-            Check("pictures: a description finds the blue one", hits.Count == 3 && hits[0].Name == "blue.png", hits.Count > 0 ? hits[0].Name : "");
+            Check("pictures: a description finds the blue one", hits.Count == 4 && hits[0].Name == "blue.png", hits.Count > 0 ? hits[0].Name : "");
         }
     }
 

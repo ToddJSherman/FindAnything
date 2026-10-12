@@ -20,8 +20,8 @@ namespace FindAnything.Core
         public volatile string Current = "";
         public string Error;   // set by the caller when the search could not run at all
 
-        private Clip clip;
-        private float[] query;
+        private Func<string, float[]> embed;
+        private List<float[]> queries;
         private readonly List<string> roots;
         private readonly string[] skipDirs;
         private readonly HashSet<string> skipFiles = new HashSet<string>(StringComparer.OrdinalIgnoreCase);   // the sample pictures themselves
@@ -35,11 +35,14 @@ namespace FindAnything.Core
             if (samples != null) foreach (string s in samples) skipFiles.Add(LongPath.Strip(Path.GetFullPath(s)));
         }
 
-        /// <summary>Scores every picture under the folders against the query fingerprint (unit length or a sum of them).</summary>
-        public void Run(Clip clip, float[] query, int threads, CancellationToken ct)
+        /// <summary>
+        /// Scores every picture under the folders: its fingerprint (from embed) against each query fingerprint, keeping
+        /// the closest. With several samples a picture only has to look like one of them.
+        /// </summary>
+        public void Run(Func<string, float[]> embed, List<float[]> queries, int threads, CancellationToken ct)
         {
-            this.clip = clip;
-            this.query = query;
+            this.embed = embed;
+            this.queries = queries;
             List<FileInfo> files = new List<FileInfo>();
             Stack<DirectoryInfo> stack = new Stack<DirectoryInfo>();
             foreach (string r in roots)
@@ -81,12 +84,14 @@ namespace FindAnything.Core
                     try
                     {
                         if (skipFiles.Contains(path)) return;
-                        float[] e = clip.EmbedImage(f.FullName);
+                        float[] e = embed(f.FullName);
                         FileHit h = new FileHit();
                         h.IoPath = f.FullName; h.Path = path; h.Name = f.Name; h.Folder = LongPath.Strip(f.DirectoryName);
                         h.Size = f.Length; h.Modified = f.LastWriteTime;
                         h.Source = "SIMILAR";
-                        h.Score = Clip.Similarity(query, e);
+                        float best = -1;
+                        foreach (float[] q in queries) best = Math.Max(best, Clip.Similarity(q, e));
+                        h.Score = best;
                         Hits.Enqueue(h);
                     }
                     catch (OperationCanceledException) { throw; }

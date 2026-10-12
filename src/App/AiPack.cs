@@ -12,22 +12,22 @@ using FindAnything.Ui;
 namespace FindAnything.App
 {
     /// <summary>
-    /// The picture model (OpenAI CLIP ViT-B/32, 8-bit, plus Microsoft ONNX Runtime) is not in the installer: it is
+    /// The picture models (Meta DINOv2-small and OpenAI CLIP ViT-B/32, both 8-bit, plus Microsoft ONNX Runtime) is not in the installer: it is
     /// downloaded once, only after the user agrees, from this project's GitHub release, and checked against a pinned
     /// SHA-256 before it is unpacked to %LOCALAPPDATA%\FindAnything\ai.
     /// </summary>
     internal static class AiPack
     {
-        public const string Url = "https://github.com/ToddJSherman/FindAnything/releases/download/picture-model-1/FindAnything-picture-model.zip";
-        public const string Sha256 = "64c5314685b21ae6f1c8a272c0b8dc2db31b0cc0caa3413076936f0d0eda0f98";
-        public const string SizeText = "117 MB";
+        public const string Url = "https://github.com/ToddJSherman/FindAnything/releases/download/picture-model-2/FindAnything-picture-model.zip";
+        public const string Sha256 = "d8daf0ff6d862c79ab0f0c38e90d936e41a81eca210ded7bcdbdb1e34d286c16";
+        public const string SizeText = "137 MB";
 
         /// <summary>True when the model is ready; otherwise asks, downloads and unpacks it.</summary>
         public static bool Ensure(IWin32Window owner)
         {
             if (Clip.Installed) return true;
             DialogResult r = MessageBox.Show(owner,
-                "Similar pictures uses a picture-recognition model that runs on this PC (OpenAI CLIP, with Microsoft ONNX Runtime).\n\n" +
+                "Similar pictures uses picture-recognition models that run on this PC (Meta DINOv2 and OpenAI CLIP, with Microsoft ONNX Runtime).\n\n" +
                 "It is not part of the installer: it is downloaded once (" + SizeText + ") from this app's GitHub page, then works offline. " +
                 "Nothing about your pictures is ever sent anywhere.\n\nDownload it now?",
                 "Picture model", MessageBoxButtons.YesNo, MessageBoxIcon.Question);

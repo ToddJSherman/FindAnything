@@ -44,6 +44,7 @@ namespace FindAnything.App
         private readonly Chip kFinancial = new Chip("Cards & SSNs", "\uE8C7", true);
         private readonly SkinButton pickSamples = new SkinButton("Pick samples", "", ButtonKind.Secondary);
         private readonly Chip clipCache = new Chip("Remember fingerprints", "\uE74E", true);
+        private readonly Chip weaker = new Chip("Show weaker matches", "\uE890", true);
         private readonly Tabs modeTabs = new Tabs(new[] { "Search text", "Find keys", "Similar pictures", "Drive check" }, new[] { Theme.GSearch, "\uE192", "\uE8B9", "\uEDA2" });
         private int mode;                       // 0 search text, 1 find keys, 2 drive check, 3 similar pictures
         private PictureSearch picSearch;
@@ -205,6 +206,21 @@ namespace FindAnything.App
             Tip(clipCache, "Remember each picture's fingerprint (512 numbers describing it), so later searches of the same folders are much faster.\n" +
                            "The catch: those fingerprints are stored on this PC, in %LOCALAPPDATA%\\FindAnything\\pictures.\n" +
                            "Off: pictures are read again every search and nothing is kept. Turning this off deletes what was stored.");
+            Tip(weaker, "Off: only pictures that really look like your sample (or match the description) are listed.\n" +
+                        "On: every picture is listed, ranked from most to least alike.");
+            weaker.CheckedChanged += delegate
+            {
+                if (mode != 3 || allPictures.Count == 0) return;
+                ShowAlikePictures();
+                if (picSearch == null)
+                {
+                    SetPictureEmptyText();
+                    List<string> parts = new List<string>();
+                    List<bool> bold = new List<bool>();
+                    AddPictureCounts(delegate(string s, bool b) { parts.Add(s); bold.Add(b); });
+                    status.SetParts(parts.ToArray(), bold.ToArray());
+                }
+            };
             clipCache.CheckedChanged += delegate
             {
                 Clip.UseCache = clipCache.Checked;
@@ -260,7 +276,7 @@ namespace FindAnything.App
             {
                 findField, lookField, browseButton, aboutButton, modeTabs,
                 matchCase, wholeWord, wildcards, loose, inContents, inNames, insideDocs, utf16, ocr, onlyPics, ocrCache,
-                clipCache, kProduct, kLabeled, kPasswords, kTokens, kFinancial, filtersChip,
+                clipCache, weaker, kProduct, kLabeled, kPasswords, kTokens, kFinancial, filtersChip,
                 types, excludeTypes, skipFolders, maxMb, threads
             });
             // Last in z-order: the Search button's glow sits under its neighbours instead of erasing their edges.
@@ -275,7 +291,7 @@ namespace FindAnything.App
             {
                 case 1: return new[] { new[] { kProduct, kLabeled, kPasswords, kTokens, kFinancial }, new[] { insideDocs, ocr, onlyPics, ocrCache } };
                 case 2: return new[] { new[] { matchCase, utf16 } };
-                case 3: return new[] { new[] { clipCache } };
+                case 3: return new[] { new[] { weaker }, new[] { clipCache } };
                 default: return new[] { new[] { matchCase, wholeWord, wildcards, loose }, new[] { inContents, inNames }, new[] { insideDocs, utf16, ocr, onlyPics, ocrCache } };
             }
         }
@@ -337,7 +353,7 @@ namespace FindAnything.App
             // chips, wrapping onto a second row when the window is narrow
             separatorsX.Clear();
             separatorsY.Clear();
-            foreach (Chip c in new[] { matchCase, wholeWord, wildcards, loose, inContents, inNames, insideDocs, utf16, ocr, onlyPics, ocrCache, clipCache, kProduct, kLabeled, kPasswords, kTokens, kFinancial })
+            foreach (Chip c in new[] { matchCase, wholeWord, wildcards, loose, inContents, inNames, insideDocs, utf16, ocr, onlyPics, ocrCache, clipCache, weaker, kProduct, kLabeled, kPasswords, kTokens, kFinancial })
                 c.Visible = false;
             int pad = Skin.Pad("chip");
             bool filters = mode != 2 && mode != 3;
@@ -407,6 +423,7 @@ namespace FindAnything.App
             if (Busy) { modeTabs.SelectedIndex = TabToMode(mode); return; }
             if (mode != 2) lookTextFiles = lookField.Text;
             mode = m;
+            allPictures.Clear();
             if (modeTabs.SelectedIndex != TabToMode(m)) modeTabs.SelectedIndex = TabToMode(m);
             results.Similar = mode == 3;
             results.EmptyImage = mode == 3 ? Skin.Art("grandma-256") : null;
@@ -608,6 +625,7 @@ namespace FindAnything.App
             ocrCache.Checked = settings.GetBool("OcrCache", false);
             onlyPics.Checked = ocr.Checked && settings.GetBool("OnlyPictures", false);
             clipCache.Checked = settings.GetBool("PictureCache", false);
+            weaker.Checked = settings.GetBool("ShowWeakerMatches", false);
             Clip.UseCache = clipCache.Checked;
             if (!clipCache.Checked) Clip.ClearCache();
             Ocr.UseCache = ocrCache.Checked;
@@ -639,6 +657,7 @@ namespace FindAnything.App
             settings.Set("OcrCache", ocrCache.Checked);
             settings.Set("OnlyPictures", onlyPics.Checked);
             settings.Set("PictureCache", clipCache.Checked);
+            settings.Set("ShowWeakerMatches", weaker.Checked);
             settings.Set("Keys.Product", kProduct.Checked);
             settings.Set("Keys.Labeled", kLabeled.Checked);
             settings.Set("Keys.Passwords", kPasswords.Checked);
@@ -1102,11 +1121,13 @@ namespace FindAnything.App
             SaveSettings();
 
             hits.Clear();
+            allPictures.Clear();
             problems.Clear();
+            picByText = samples == null;
             results.SortColumn = -1;
             results.ScoreLow = results.ScoreHigh = 0;
             results.EmptyTitle = clip == null ? "Loading the picture model..." : "Looking at pictures...";
-            results.EmptyText = "The closest pictures rise to the top as they are found.";
+            results.EmptyText = "Pictures that look alike appear here as they are found.";
             results.ResetSelection();
 
             List<string> skip = samples ?? new List<string>();
@@ -1120,11 +1141,20 @@ namespace FindAnything.App
                 try
                 {
                     if (loaded == null) loaded = new Clip(Environment.ProcessorCount);
-                    float[] q = new float[Clip.Dim];
+                    // A sample is matched by how it looks (DINOv2); a description by what is in the picture (CLIP).
+                    List<float[]> queries = new List<float[]>();
+                    Func<string, float[]> embed;
                     if (samples != null)
-                        foreach (string s in samples) { float[] e = loaded.EmbedImage(LongPath.Add(s)); for (int k = 0; k < q.Length; k++) q[k] += e[k]; }
-                    else q = loaded.EmbedText(description);
-                    ps.Run(loaded, q, Math.Max(1, Environment.ProcessorCount / 4), token);
+                    {
+                        embed = loaded.EmbedLook;
+                        foreach (string s in samples) queries.Add(loaded.EmbedLook(LongPath.Add(s)));
+                    }
+                    else
+                    {
+                        embed = loaded.EmbedImage;
+                        queries.Add(loaded.EmbedText(description));
+                    }
+                    ps.Run(embed, queries, Math.Max(1, Environment.ProcessorCount / 4), token);
                 }
                 catch (OperationCanceledException) { }
                 catch (Exception ex) { ps.Error = ex.Message; }
@@ -1144,18 +1174,12 @@ namespace FindAnything.App
         {
             PictureSearch ps = picSearch;
             bool done = picTask.IsCompleted;
-            int before = hits.Count;
+            int before = allPictures.Count;
             FileHit h;
-            while (ps.Hits.TryDequeue(out h)) hits.Add(h);
+            while (ps.Hits.TryDequeue(out h)) allPictures.Add(h);
             string p;
             while (ps.Errors.TryDequeue(out p)) problems.Add(p);
-            if (hits.Count != before)
-            {
-                FileHit keep = results.FocusedItem;
-                RankPictures();
-                if (keep != null && results.SelectedItems.Count > 0) results.Select(keep);
-                results.ItemsChanged();
-            }
+            if (allPictures.Count != before) ShowAlikePictures();
             status.Notes = Interlocked.Read(ref ps.ErrorCount);
 
             List<string> parts = new List<string>();
@@ -1163,7 +1187,7 @@ namespace FindAnything.App
             Action<string, bool> add = delegate(string s, bool b) { parts.Add(s); bold.Add(b); };
             long total = Interlocked.Read(ref ps.Pictures), seen = Interlocked.Read(ref ps.Done);
             if (done) add((cts.IsCancellationRequested ? "Stopped after " : "Done in ") + TimeText(clock.Elapsed.TotalSeconds), true);
-            add(hits.Count.ToString("N0"), true); add(hits.Count == 1 ? "picture ranked" : "pictures ranked", false);
+            AddPictureCounts(add);
             if (!done && total > 0)
             {
                 add(seen.ToString("N0") + " of " + total.ToString("N0"), true); add("read", false);
@@ -1177,14 +1201,66 @@ namespace FindAnything.App
             tick.Stop();
             status.Running = false;
             if (ps.Error != null) Warn("The picture search could not run: " + ps.Error);
-            results.EmptyTitle = "No pictures here";
-            results.EmptyText = "Nothing to compare in this folder: JPG, PNG, HEIC, WebP, GIF, BMP and TIFF pictures are read.";
+            SetPictureEmptyText();
             results.ItemsChanged();
             results.SelectFirst();
             picSearch = null;
             cts.Dispose();
             cts = null;
             LayoutHero();
+        }
+
+        // ------------------------------------------------------------------ similar pictures: what is shown
+
+        private readonly List<FileHit> allPictures = new List<FileHit>();   // every picture scored; hits shows the alike ones
+        private bool picByText;
+
+        /// <summary>
+        /// The score a picture needs to be listed. Samples: DINOv2's measured cut-off. Descriptions: CLIP's text scores
+        /// are not calibrated across sentences, so the top band (within 0.05 of the best, and at least 0.22).
+        /// </summary>
+        private float PictureCutoff()
+        {
+            if (!picByText) return Clip.LookAlike;
+            float best = 0;
+            foreach (FileHit x in allPictures) best = Math.Max(best, x.Score);
+            return Math.Max(0.22f, best - 0.05f);
+        }
+
+        private int HiddenPictures { get { return allPictures.Count - hits.Count; } }
+
+        /// <summary>Lists the pictures above the cut-off (all of them with Show weaker matches), most alike first.</summary>
+        private void ShowAlikePictures()
+        {
+            FileHit keep = results.FocusedItem;
+            bool hadSelection = results.SelectedItems.Count > 0;
+            float cut = PictureCutoff();
+            hits.Clear();
+            foreach (FileHit x in allPictures) if (weaker.Checked || x.Score >= cut) hits.Add(x);
+            RankPictures();
+            if (keep != null && hadSelection && hits.Contains(keep)) results.Select(keep);
+            results.ItemsChanged();
+        }
+
+        private void AddPictureCounts(Action<string, bool> add)
+        {
+            if (weaker.Checked) { add(hits.Count.ToString("N0"), true); add(hits.Count == 1 ? "picture ranked" : "pictures ranked", false); return; }
+            add(hits.Count.ToString("N0"), true); add(picByText ? "match" + (hits.Count == 1 ? "" : "es") : "alike", false);
+            if (HiddenPictures > 0) { add(HiddenPictures.ToString("N0"), true); add("not alike (hidden)", false); }
+        }
+
+        private void SetPictureEmptyText()
+        {
+            if (allPictures.Count == 0)
+            {
+                results.EmptyTitle = "No pictures here";
+                results.EmptyText = "Nothing to compare in this folder: JPG, PNG, HEIC, WebP, GIF, BMP and TIFF pictures are read.";
+            }
+            else
+            {
+                results.EmptyTitle = picByText ? "Nothing here matches that description" : "Nothing here looks like your sample";
+                results.EmptyText = allPictures.Count.ToString("N0") + " pictures checked. Turn on Show weaker matches to see the closest ones anyway.";
+            }
         }
 
         /// <summary>Most alike first; the rank goes in FirstLine and the bar spans the list's lowest to highest score.</summary>
