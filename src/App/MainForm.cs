@@ -42,7 +42,7 @@ namespace FindAnything.App
         private readonly Chip kPasswords = new Chip("Passwords & PINs", "\uE72E", true);
         private readonly Chip kTokens = new Chip("Tokens & private keys", "\uE943", true);
         private readonly Chip kFinancial = new Chip("Cards & SSNs", "\uE8C7", true);
-        private readonly Chip pickSamples = new Chip("Pick sample pictures...", "\uE8E5", true);
+        private readonly SkinButton pickSamples = new SkinButton("Pick samples", "", ButtonKind.Secondary);
         private readonly Chip clipCache = new Chip("Remember fingerprints", "\uE74E", true);
         private readonly Tabs modeTabs = new Tabs(new[] { "Search text", "Find keys", "Similar pictures", "Drive check" }, new[] { Theme.GSearch, "\uE192", "\uE8B9", "\uEDA2" });
         private int mode;                       // 0 search text, 1 find keys, 2 drive check, 3 similar pictures
@@ -196,8 +196,11 @@ namespace FindAnything.App
             aboutButton.FontPx = 13;
             aboutButton.Click += delegate { ShowAbout(); };
             modeTabs.SelectedChanged += delegate { SetMode(TabToMode(modeTabs.SelectedIndex)); };
-            pickSamples.Toggle = false;
+            pickSamples.Picture = Skin.Art("grandma-96");
+            pickSamples.Accent = true;
+            pickSamples.FontPx = 15;
             pickSamples.Click += delegate { PickSamples(); };
+            findField.Box.TextChanged += delegate { if (mode == 3) UpdateSampleButton(); };
             Tip(pickSamples, "Choose one or more pictures to match. Several pictures of the same thing (a pet, a person, a place) find it more reliably.\nYou can also drop pictures on the window.");
             Tip(clipCache, "Remember each picture's fingerprint (512 numbers describing it), so later searches of the same folders are much faster.\n" +
                            "The catch: those fingerprints are stored on this PC, in %LOCALAPPDATA%\\FindAnything\\pictures.\n" +
@@ -257,10 +260,11 @@ namespace FindAnything.App
             {
                 findField, lookField, browseButton, aboutButton, modeTabs,
                 matchCase, wholeWord, wildcards, loose, inContents, inNames, insideDocs, utf16, ocr, onlyPics, ocrCache,
-                pickSamples, clipCache, kProduct, kLabeled, kPasswords, kTokens, kFinancial, filtersChip,
+                clipCache, kProduct, kLabeled, kPasswords, kTokens, kFinancial, filtersChip,
                 types, excludeTypes, skipFolders, maxMb, threads
             });
             // Last in z-order: the Search button's glow sits under its neighbours instead of erasing their edges.
+            hero.Controls.Add(pickSamples);
             hero.Controls.Add(searchButton);
             searchButton.SendToBack();
         }
@@ -271,7 +275,7 @@ namespace FindAnything.App
             {
                 case 1: return new[] { new[] { kProduct, kLabeled, kPasswords, kTokens, kFinancial }, new[] { insideDocs, ocr, onlyPics, ocrCache } };
                 case 2: return new[] { new[] { matchCase, utf16 } };
-                case 3: return new[] { new[] { pickSamples }, new[] { clipCache } };
+                case 3: return new[] { new[] { clipCache } };
                 default: return new[] { new[] { matchCase, wholeWord, wildcards, loose }, new[] { inContents, inNames }, new[] { insideDocs, utf16, ocr, onlyPics, ocrCache } };
             }
         }
@@ -309,7 +313,17 @@ namespace FindAnything.App
                 bw = Math.Max(bw, new SkinButton(label, Theme.GSearch, ButtonKind.Primary).PreferredWidth(54));
             int bp = searchButton.ShadowPad;
             Place(searchButton, new Rectangle(R - (bw - 2 * bp), y, bw - 2 * bp, Theme.S(54)), bp);
-            Place(findField, new Rectangle(L, y, R - L - (bw - 2 * bp) - Theme.S(10), Theme.S(54)), findField.ShadowPad);
+            int findRight = R - (bw - 2 * bp) - Theme.S(10);
+            // Similar pictures: the sample picker sits in the search row, between the box and the button
+            pickSamples.Visible = mode == 3;
+            if (mode == 3)
+            {
+                int sp = pickSamples.ShadowPad;
+                int pw = SampleButtonWidth() - 2 * sp;
+                Place(pickSamples, new Rectangle(findRight - pw, y, pw, Theme.S(54)), sp);
+                findRight -= pw + Theme.S(10);
+            }
+            Place(findField, new Rectangle(L, y, findRight - L, Theme.S(54)), findField.ShadowPad);
             searchButton.Invalidate();
             y += Theme.S(54) + Theme.S(10);
 
@@ -323,7 +337,7 @@ namespace FindAnything.App
             // chips, wrapping onto a second row when the window is narrow
             separatorsX.Clear();
             separatorsY.Clear();
-            foreach (Chip c in new[] { matchCase, wholeWord, wildcards, loose, inContents, inNames, insideDocs, utf16, ocr, onlyPics, ocrCache, pickSamples, clipCache, kProduct, kLabeled, kPasswords, kTokens, kFinancial })
+            foreach (Chip c in new[] { matchCase, wholeWord, wildcards, loose, inContents, inNames, insideDocs, utf16, ocr, onlyPics, ocrCache, clipCache, kProduct, kLabeled, kPasswords, kTokens, kFinancial })
                 c.Visible = false;
             int pad = Skin.Pad("chip");
             bool filters = mode != 2 && mode != 3;
@@ -395,6 +409,8 @@ namespace FindAnything.App
             mode = m;
             if (modeTabs.SelectedIndex != TabToMode(m)) modeTabs.SelectedIndex = TabToMode(m);
             results.Similar = mode == 3;
+            results.EmptyImage = mode == 3 ? Skin.Art("grandma-256") : null;
+            results.FadeInEmpty();
             hits.Clear();
             results.ResetSelection();
             lookField.Box.ReadOnly = mode == 2;
@@ -418,8 +434,9 @@ namespace FindAnything.App
                         : "Press Run as admin: Windows asks for permission, then Find Anything reopens here.";
                     break;
                 case 3:
-                    findField.SetPlaceholder("Describe it (a dog in a costume, a receipt, the beach) or pick sample pictures");
+                    findField.SetPlaceholder("Describe it (a dog in a costume, the beach) or pick samples");
                     lookField.Text = lookTextFiles;
+                    UpdateSampleButton();
                     results.EmptyTitle = "Find pictures that look alike";
                     results.EmptyText = "Pick or drop a sample picture, or describe what is in it. Runs on this PC; nothing is uploaded.";
                     break;
@@ -1014,6 +1031,24 @@ namespace FindAnything.App
         }
 
         // ------------------------------------------------------------------ similar pictures
+
+        /// <summary>Wide enough for every label the sample button can show, so it never jumps.</summary>
+        private int SampleButtonWidth()
+        {
+            string keep = pickSamples.Text;
+            int w = 0;
+            foreach (string s in new[] { "Pick samples", "88 samples" }) { pickSamples.Text = s; w = Math.Max(w, pickSamples.PreferredWidth(54)); }
+            pickSamples.Text = keep;
+            return w;
+        }
+
+        /// <summary>"Pick samples", or how many sample pictures the find box holds.</summary>
+        private void UpdateSampleButton()
+        {
+            List<string> pics = SamplePictures();
+            pickSamples.Text = pics == null ? "Pick samples" : pics.Count == 1 ? "1 sample" : pics.Count + " samples";
+            pickSamples.Invalidate();
+        }
 
         private void PickSamples()
         {

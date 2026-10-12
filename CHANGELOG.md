@@ -5,6 +5,16 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [2026.10.11.8] - 2026-10-11
+
+### Changed
+- Similar pictures: **Pick samples** is now a full-size button in the search row, between the box and Find pictures,
+  with an amber edge and a hand-drawn Polaroid of Grandma (the dog the feature was tested on) that tilts up under the
+  pointer. It shows how many samples are chosen ("3 samples"). The same Polaroid greets you on the empty results list.
+- Motion: buttons and chips fade between their resting and hover looks, the selected mode tab slides to its new place,
+  new result rows and thumbnails fade in instead of popping, the hover preview fades in, and empty states rise in
+  gently. All of it runs on one shared timer and is off when Windows' "Animation effects" setting is off.
+
 ## [2026.10.11.7] - 2026-10-11
 
 ### Added

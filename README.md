@@ -21,7 +21,8 @@ own row; right-click it and choose **Copy the key**. Type a word to narrow the l
 
 ![Find keys: product keys, serials, passwords and tokens, including one read off a photo](docs/screenshot-keys.png)
 
-**Similar pictures** finds photos by what is in them. Pick (or drop) a sample picture, or several of the same thing,
+**Similar pictures** finds photos by what is in them. Press **Pick samples** (the Polaroid of Grandma, the dog these
+tests were run on) or drop a sample picture, or several of the same thing,
 and every picture in the folder is ranked by how alike it looks. Or describe it instead: `a dog in a costume`,
 `a receipt`, `the beach at sunset`. Right-click any picture result, or a picture in Explorer, and choose **Find similar
 pictures**.
@@ -183,7 +184,8 @@ license texts are in the download): Microsoft [ONNX Runtime](https://github.com/
 OpenAI [CLIP](https://github.com/openai/CLIP) ViT-B/32 in the 8-bit ONNX export by
 [Xenova](https://huggingface.co/Xenova/clip-vit-base-patch32). The app calls ONNX Runtime's C API directly and turns
 its usage events off.
-The look was designed in HTML/CSS (`design/ui/main.html`). `tools/make-skin.ps1` renders its controls and cuts them into
+The look was designed in HTML/CSS (`design/ui/main.html`). Small animations (hover fades, the sliding mode tab, results
+and thumbnails fading in) run on one shared timer and switch off when Windows' *Animation effects* setting is off. `tools/make-skin.ps1` renders its controls and cuts them into
 the PNG sprites the app draws, so the app matches the design.
 
 ## License

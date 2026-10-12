@@ -1,0 +1,52 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <!-- "Grandma" (Roxy, a red Australian Shepherd) in a Polaroid: the Similar pictures button and empty state.
+       Folded Aussie ears, fluffy cheeks, white blaze into a white muzzle, liver nose, amber eyes and her side-eye. -->
+  <defs>
+    <linearGradient id="sky" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#4E97B6"/>
+      <stop offset="1" stop-color="#9FD0DE"/>
+    </linearGradient>
+    <linearGradient id="fur" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#CB6A2E"/>
+      <stop offset="1" stop-color="#A9501F"/>
+    </linearGradient>
+    <clipPath id="photo">
+      <rect x="54" y="34" width="148" height="150" rx="3"/>
+    </clipPath>
+  </defs>
+  <g transform="rotate(-7 128 128)">
+    <rect x="45" y="27" width="176" height="212" rx="9" fill="#000" opacity="0.3"/>
+    <rect x="40" y="20" width="176" height="212" rx="9" fill="#FBF8F1"/>
+    <rect x="54" y="34" width="148" height="150" rx="3" fill="url(#sky)"/>
+    <g clip-path="url(#photo)">
+      <!-- body and white ruff -->
+      <path d="M50 190 C60 160 90 150 128 150 C166 150 196 160 206 190 Z" fill="#A9501F"/>
+      <path d="M96 190 L100 168 L108 176 L114 162 L122 174 L128 160 L134 174 L142 162 L148 176 L156 168 L160 190 Z" fill="#F7F2EA"/>
+      <!-- folded ears (Aussie: high set, tips falling forward) -->
+      <path d="M82 92 C78 70 86 54 100 50 C104 62 108 72 112 80 C102 80 92 84 82 92 Z" fill="#8A3816"/>
+      <path d="M174 92 C178 70 170 54 156 50 C152 62 148 72 144 80 C154 80 164 84 174 92 Z" fill="#8A3816"/>
+      <path d="M100 50 C108 52 114 60 116 68 C110 66 104 64 100 50 Z" fill="#B85C2A"/>
+      <path d="M156 50 C148 52 142 60 140 68 C146 66 152 64 156 50 Z" fill="#B85C2A"/>
+      <!-- head with fluffy cheeks -->
+      <path d="M128 70 C156 70 176 86 180 108 L188 116 L180 120 L186 130 L176 132 C170 148 152 160 128 160 C104 160 86 148 80 132 L70 130 L76 120 L68 116 L76 108 C80 86 100 70 128 70 Z" fill="url(#fur)"/>
+      <!-- white blaze: broad on the forehead, into the white muzzle and chin -->
+      <path d="M118 70 C124 68 134 68 140 71 C138 84 140 98 146 112 C158 120 162 138 154 150 C146 160 110 160 102 150 C94 138 98 120 110 112 C116 98 118 84 118 70 Z" fill="#F7F2EA"/>
+      <!-- tan points -->
+      <ellipse cx="103" cy="100" rx="6.5" ry="4" fill="#E2A36A"/>
+      <ellipse cx="153" cy="101" rx="6.5" ry="4" fill="#E2A36A"/>
+      <!-- eyes: left wide open, right half-closed (the famous side-eye) -->
+      <circle cx="103" cy="113" r="8" fill="#C8892E"/>
+      <circle cx="105" cy="113" r="4.8" fill="#24150B"/>
+      <circle cx="107" cy="111" r="1.9" fill="#FFFFFF"/>
+      <circle cx="153" cy="114" r="8" fill="#C8892E"/>
+      <circle cx="156" cy="115" r="4.8" fill="#24150B"/>
+      <path d="M144 114 C146 105 160 105 162 114 C158 111 148 111 144 114 Z" fill="#A9501F"/>
+      <path d="M144 114 C148 111 158 111 162 114" stroke="#6E2C12" stroke-width="2" fill="none" stroke-linecap="round"/>
+      <!-- liver nose + mouth -->
+      <path d="M115 134 C115 127 141 127 141 134 C141 142 133 146 128 146 C123 146 115 142 115 134 Z" fill="#93554A"/>
+      <ellipse cx="122" cy="132" rx="4" ry="2.2" fill="#C4877B"/>
+      <path d="M128 146 L128 150 M128 150 C124 155 118 155 115 151 M128 150 C132 155 138 155 141 151" stroke="#93554A" stroke-width="3" fill="none" stroke-linecap="round"/>
+    </g>
+    <path d="M92 208 C108 203 124 211 140 205 C150 202 158 206 166 204" stroke="#B9AE9A" stroke-width="3.5" fill="none" stroke-linecap="round"/>
+  </g>
+</svg>

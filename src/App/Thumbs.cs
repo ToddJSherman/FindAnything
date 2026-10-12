@@ -178,8 +178,12 @@ namespace FindAnything.App
         /// Draws an image fitted inside 'box' with its proportions kept and centred: the same footprint whether the
         /// picture is 64 px or 8000 px, never stretched.
         /// </summary>
-        public static void DrawFitted(Graphics g, Image img, RectangleF box)
+        public static void DrawFitted(Graphics g, Image img, RectangleF box) { DrawFitted(g, img, box, 1f); }
+
+        /// <summary>As above, at an opacity (thumbnails fade in as they arrive).</summary>
+        public static void DrawFitted(Graphics g, Image img, RectangleF box, float alpha)
         {
+            if (alpha <= 0.001f) return;
             float k = Math.Min(box.Width / img.Width, box.Height / img.Height);
             float w = img.Width * k, h = img.Height * k;
             RectangleF r = new RectangleF(box.X + (box.Width - w) / 2, box.Y + (box.Height - h) / 2, w, h);
@@ -192,6 +196,7 @@ namespace FindAnything.App
             using (ImageAttributes ia = new ImageAttributes())
             {
                 ia.SetWrapMode(WrapMode.TileFlipXY);   // no grey fringe at the edges
+                if (alpha < 0.999f) { ColorMatrix cm = new ColorMatrix(); cm.Matrix33 = alpha; ia.SetColorMatrix(cm); }
                 g.DrawImage(img, new[] { r.Location, new PointF(r.Right, r.Top), new PointF(r.Left, r.Bottom) },
                     new RectangleF(0, 0, img.Width, img.Height), GraphicsUnit.Pixel, ia);
             }
@@ -302,7 +307,23 @@ namespace FindAnything.App
             y = Math.Max(wa.Top + Theme.S(8), Math.Min(y, wa.Bottom - Height - Theme.S(8)));
             x = Math.Max(wa.Left + Theme.S(8), x);
             Location = new Point(x, y);
-            if (!Visible) Show(); else Invalidate();
+            if (!Visible)
+            {
+                // fade in (layered window opacity), about 140 ms
+                if (Anim.On)
+                {
+                    Opacity = 0;
+                    long start = Anim.Now;
+                    Anim.Run(delegate
+                    {
+                        if (IsDisposed || !Visible) return false;
+                        float t = Anim.Progress(start, 140);
+                        Opacity = Anim.Ease(t);
+                        return t < 1f;
+                    });
+                }
+                Show();
+            }
             Invalidate();
         }
 

@@ -43,6 +43,37 @@ namespace FindAnything.App
         public bool Similar;
         public float ScoreLow, ScoreHigh;
 
+        /// <summary>Shown above the empty-state text instead of the search glyph.</summary>
+        public Image EmptyImage;
+
+        // Rows that arrive during a search fade in; so do thumbnails as Windows hands them over.
+        private readonly Dictionary<FileHit, long> rowBorn = new Dictionary<FileHit, long>();
+        private readonly Dictionary<string, long> thumbBorn = new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase);
+        private long emptyBorn;
+        private const int RowFadeMs = 260, ThumbFadeMs = 220, EmptyFadeMs = 420;
+        private Func<bool> fadeStep;
+
+        private void KeepFading()
+        {
+            if (fadeStep == null) fadeStep = delegate
+            {
+                if (IsDisposed) return false;
+                Invalidate();
+                long now = Anim.Now;
+                foreach (long t in rowBorn.Values) if (now - t < RowFadeMs) return true;
+                foreach (long t in thumbBorn.Values) if (now - t < ThumbFadeMs) return true;
+                return Items.Count == 0 && now - emptyBorn < EmptyFadeMs;
+            };
+            Anim.Run(fadeStep);
+        }
+
+        /// <summary>Fades the empty-state message in (after switching mode or clearing the list).</summary>
+        public void FadeInEmpty()
+        {
+            emptyBorn = Anim.Now;
+            KeepFading();
+        }
+
         public ResultsView()
         {
             SetStyle(ControlStyles.OptimizedDoubleBuffer | ControlStyles.AllPaintingInWmPaint | ControlStyles.UserPaint |
@@ -92,6 +123,8 @@ namespace FindAnything.App
 
         public void ResetSelection()
         {
+            rowBorn.Clear();
+            thumbBorn.Clear();
             selected.Clear();
             focus = anchor = -1;
             top = 0;
@@ -100,6 +133,17 @@ namespace FindAnything.App
 
         public void ItemsChanged()
         {
+            // rows seen for the first time fade in (only the ones on screen are worth the timer)
+            long now = Anim.Now;
+            bool fresh = false;
+            int first = top / RowH, last = Math.Min(Items.Count, first + ViewH / RowH + 2);
+            for (int i = 0; i < Items.Count; i++)
+            {
+                if (rowBorn.ContainsKey(Items[i])) continue;
+                rowBorn[Items[i]] = i >= first && i < last ? now : now - RowFadeMs;
+                if (i >= first && i < last) fresh = true;
+            }
+            if (fresh) KeepFading();
             top = Math.Min(top, MaxTop);
             Invalidate();
         }
@@ -194,7 +238,18 @@ namespace FindAnything.App
             int first = top / RowH;
             int y = HeaderH - (top % RowH);
             g.SetClip(new Rectangle(0, HeaderH, Width, ViewH));
-            for (int i = first; i < Items.Count && y < Height; i++, y += RowH) PaintRow(g, i, new Rectangle(0, y, Width, RowH));
+            long now = Anim.Now;
+            for (int i = first; i < Items.Count && y < Height; i++, y += RowH)
+            {
+                Rectangle rr = new Rectangle(0, y, Width, RowH);
+                PaintRow(g, i, rr);
+                long born;
+                if (Anim.On && rowBorn.TryGetValue(Items[i], out born) && now - born < RowFadeMs)
+                {
+                    float a = 1f - Anim.Ease((now - born) / (float)RowFadeMs);
+                    using (SolidBrush veil = new SolidBrush(Color.FromArgb((int)(255 * a), Theme.Bg))) g.FillRectangle(veil, rr);
+                }
+            }
             g.ResetClip();
 
             PaintHeader(g);
@@ -205,9 +260,23 @@ namespace FindAnything.App
         {
             Rectangle r = new Rectangle(0, HeaderH, Width, ViewH);
             int cy = r.Top + r.Height / 2 - Theme.S(40);
-            TextRenderer.DrawText(g, Theme.GSearch, Theme.Icons(44), new Rectangle(0, cy - Theme.S(34), Width, Theme.S(60)), Theme.Line2, Theme.Center);
-            TextRenderer.DrawText(g, EmptyTitle, Theme.UiSemibold(17), new Rectangle(0, cy + Theme.S(34), Width, Theme.S(26)), Theme.Dim, Theme.Center);
-            TextRenderer.DrawText(g, EmptyText, Theme.Ui(13), new Rectangle(0, cy + Theme.S(62), Width, Theme.S(22)), Theme.Faint, Theme.Center);
+            // fades in and rises a few pixels when the list empties or the mode changes
+            float t = Anim.Ease(Anim.Progress(emptyBorn, EmptyFadeMs));
+            int rise = (int)(Theme.S(10) * (1 - t));
+            cy += rise;
+            Color title = Anim.Mix(Theme.Bg, Theme.Dim, t), text = Anim.Mix(Theme.Bg, Theme.Faint, t);
+            if (EmptyImage != null)
+            {
+                int s = Theme.S(118);
+                GraphicsState st = g.Save();
+                g.InterpolationMode = InterpolationMode.HighQualityBicubic;
+                g.PixelOffsetMode = PixelOffsetMode.HighQuality;
+                Anim.DrawImage(g, EmptyImage, new Rectangle(Width / 2 - s / 2, cy - s + Theme.S(22), s, s), t);
+                g.Restore(st);
+            }
+            else TextRenderer.DrawText(g, Theme.GSearch, Theme.Icons(44), new Rectangle(0, cy - Theme.S(34), Width, Theme.S(60)), Anim.Mix(Theme.Bg, Theme.Line2, t), Theme.Center);
+            TextRenderer.DrawText(g, EmptyTitle, Theme.UiSemibold(17), new Rectangle(0, cy + Theme.S(34), Width, Theme.S(26)), title, Theme.Center);
+            TextRenderer.DrawText(g, EmptyText, Theme.Ui(13), new Rectangle(0, cy + Theme.S(62), Width, Theme.S(22)), text, Theme.Center);
         }
 
         private void PaintHeader(Graphics g)
@@ -273,7 +342,9 @@ namespace FindAnything.App
                     {
                         GraphicsState gs = g.Save();
                         using (GraphicsPath clip = Theme.Round(tr, Theme.S(6))) g.SetClip(clip, CombineMode.Intersect);
-                        Thumbs.DrawFitted(g, thumb, Rectangle.Inflate(tr, -Theme.S(1), -Theme.S(1)));
+                        long tb;
+                        if (!thumbBorn.TryGetValue(h.Path, out tb)) { tb = Anim.Now; thumbBorn[h.Path] = tb; KeepFading(); }
+                        Thumbs.DrawFitted(g, thumb, Rectangle.Inflate(tr, -Theme.S(1), -Theme.S(1)), Anim.Ease(Anim.Progress(tb, ThumbFadeMs)));
                         g.Restore(gs);
                     }
                     Theme.StrokeRound(g, i == thumbHover ? Theme.AmberHi : Theme.Line2, tr, Theme.S(6), i == thumbHover ? Theme.S(1.5f) : 1);

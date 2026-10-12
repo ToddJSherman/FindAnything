@@ -21,6 +21,7 @@ set REFS=%REFS% %WINRT%
 rem The skin: PNG sprites cut from design\ui\sprites.html by tools\make-skin.ps1, plus the icon.
 set SKIN=/resource:src\App\app.ico,app.ico
 for %%f in (src\App\skin\*.png) do call set SKIN=%%SKIN%% /resource:%%f,skin.%%~nxf
+for %%f in (src\App\art\*.png) do call set SKIN=%%SKIN%% /resource:%%f,art.%%~nxf
 
 "%CSC%" /nologo /optimize+ /unsafe /target:winexe /out:bin\FindAnything.exe /win32icon:src\App\app.ico /win32manifest:src\App\app.manifest %REFS% %SKIN% src\AppInfo.cs src\Core\*.cs src\App\*.cs
 if errorlevel 1 exit /b 1

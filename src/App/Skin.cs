@@ -193,6 +193,84 @@ namespace FindAnything.Ui
         private static extern int SetWindowTheme(IntPtr hwnd, string app, string idList);
     }
 
+    /// <summary>
+    /// Small UI animations (hover fades, the sliding tab, rows and thumbnails fading in) on one shared UI-thread timer.
+    /// Off when Windows' "Animation effects" setting is off, so motion-sensitive users get none.
+    /// </summary>
+    internal static class Anim
+    {
+        [DllImport("user32.dll")] private static extern bool SystemParametersInfo(int action, int param, out bool value, int winIni);
+
+        public static readonly bool On = Enabled();
+        private static readonly List<Func<bool>> steps = new List<Func<bool>>();
+        private static Timer timer;
+        private static readonly System.Diagnostics.Stopwatch clock = System.Diagnostics.Stopwatch.StartNew();
+
+        private static bool Enabled()
+        {
+            bool on;
+            try { return !SystemParametersInfo(0x1042 /* SPI_GETCLIENTAREAANIMATION */, 0, out on, 0) || on; }
+            catch (Exception) { return true; }
+        }
+
+        /// <summary>Milliseconds since the app started: the time base for every animation.</summary>
+        public static long Now { get { return clock.ElapsedMilliseconds; } }
+
+        /// <summary>Calls step about 60 times a second until it returns false.</summary>
+        public static void Run(Func<bool> step)
+        {
+            if (!On) { step(); return; }
+            if (steps.Contains(step)) return;
+            steps.Add(step);
+            if (timer == null)
+            {
+                timer = new Timer();
+                timer.Interval = 15;
+                timer.Tick += delegate
+                {
+                    for (int i = steps.Count - 1; i >= 0; i--)
+                    {
+                        bool more;
+                        try { more = steps[i](); } catch (Exception) { more = false; }
+                        if (!more) steps.RemoveAt(i);
+                    }
+                    if (steps.Count == 0) timer.Stop();
+                };
+            }
+            timer.Start();
+        }
+
+        /// <summary>0..1 progress of an animation that started at a time from Now and lasts ms.</summary>
+        public static float Progress(long start, int ms)
+        {
+            if (!On) return 1f;
+            return Math.Max(0f, Math.Min(1f, (Now - start) / (float)ms));
+        }
+
+        /// <summary>Ease-out cubic: quick start, soft landing.</summary>
+        public static float Ease(float t) { t = 1 - t; return 1 - t * t * t; }
+
+        public static Color Mix(Color a, Color b, float t)
+        {
+            t = Math.Max(0f, Math.Min(1f, t));
+            return Color.FromArgb((int)(a.A + (b.A - a.A) * t), (int)(a.R + (b.R - a.R) * t), (int)(a.G + (b.G - a.G) * t), (int)(a.B + (b.B - a.B) * t));
+        }
+
+        /// <summary>Draws an image at an opacity (0..1).</summary>
+        public static void DrawImage(Graphics g, Image img, Rectangle dst, float alpha)
+        {
+            if (alpha >= 0.999f) { g.DrawImage(img, dst); return; }
+            if (alpha <= 0.001f) return;
+            using (ImageAttributes ia = new ImageAttributes())
+            {
+                ColorMatrix cm = new ColorMatrix();
+                cm.Matrix33 = alpha;
+                ia.SetColorMatrix(cm);
+                g.DrawImage(img, dst, 0, 0, img.Width, img.Height, GraphicsUnit.Pixel, ia);
+            }
+        }
+    }
+
     /// <summary>Embedded PNG sprites, drawn 9-sliced.</summary>
     internal static class Skin
     {
@@ -236,8 +314,12 @@ namespace FindAnything.Ui
         public static int Pad(string name) { return Theme.S(Get(name).Pad); }
 
         /// <summary>Draws the sprite so its visible shape (not its shadow) fills 'shape'.</summary>
-        public static void Draw(Graphics g, string name, Rectangle shape)
+        public static void Draw(Graphics g, string name, Rectangle shape) { Draw(g, name, shape, 1f); }
+
+        /// <summary>Draws the sprite at an opacity (0..1): how hover states fade in and out.</summary>
+        public static void Draw(Graphics g, string name, Rectangle shape, float alpha)
         {
+            if (alpha <= 0.001f) return;
             Sprite s = Get(name);
             if (s.Image == null) { Theme.FillRound(g, Theme.Surface, shape, Theme.S(12)); return; }
             int pad = Theme.S(s.Pad);
@@ -254,6 +336,7 @@ namespace FindAnything.Ui
             using (ImageAttributes ia = new ImageAttributes())
             {
                 ia.SetWrapMode(WrapMode.TileFlipXY);   // no seams at slice edges
+                if (alpha < 0.999f) { ColorMatrix cm = new ColorMatrix(); cm.Matrix33 = alpha; ia.SetColorMatrix(cm); }
                 int sw = s.Image.Width, sh = s.Image.Height;
                 int[] sx = { 0, srcC, sw - srcC, sw };
                 int[] sy = { 0, srcC, sh - srcC, sh };
@@ -272,6 +355,22 @@ namespace FindAnything.Ui
         }
 
         private static Image appIcon;
+        private static readonly Dictionary<string, Image> art = new Dictionary<string, Image>();
+
+        /// <summary>An illustration embedded as art.NAME.png (src\App\art), or null.</summary>
+        public static Image Art(string name)
+        {
+            Image img;
+            if (art.TryGetValue(name, out img)) return img;
+            try
+            {
+                using (Stream st = Assembly.GetExecutingAssembly().GetManifestResourceStream("art." + name + ".png"))
+                    img = st == null ? null : new Bitmap(st);
+            }
+            catch (Exception) { img = null; }
+            art[name] = img;
+            return img;
+        }
 
         /// <summary>
         /// The biggest image in the embedded app.ico. Its frames are PNG-compressed, which System.Drawing.Icon cannot
@@ -350,6 +449,8 @@ namespace FindAnything.Ui
     internal class SkinControl : Control
     {
         protected bool hover, down;
+        protected float hot;              // hover, faded: 0 = resting, 1 = fully hovered
+        private Func<bool> hotStep;
 
         public SkinControl()
         {
@@ -377,8 +478,24 @@ namespace FindAnything.Ui
             }
         }
 
-        protected override void OnMouseEnter(EventArgs e) { hover = true; Invalidate(); base.OnMouseEnter(e); }
-        protected override void OnMouseLeave(EventArgs e) { hover = false; down = false; Invalidate(); base.OnMouseLeave(e); }
+        protected override void OnMouseEnter(EventArgs e) { hover = true; FadeHover(); base.OnMouseEnter(e); }
+        protected override void OnMouseLeave(EventArgs e) { hover = false; down = false; FadeHover(); base.OnMouseLeave(e); }
+
+        /// <summary>Moves "hot" toward the hover state: about 110 ms in, 180 ms out.</summary>
+        protected void FadeHover()
+        {
+            if (hotStep == null)
+                hotStep = delegate
+                {
+                    if (IsDisposed) return false;
+                    float target = hover ? 1f : 0f;
+                    hot = hover ? Math.Min(target, hot + 0.14f) : Math.Max(target, hot - 0.085f);
+                    if (!Anim.On) hot = target;
+                    Invalidate();
+                    return hot != target;
+                };
+            Anim.Run(hotStep);
+        }
         protected override void OnMouseDown(MouseEventArgs e) { if (e.Button == MouseButtons.Left) { down = true; Invalidate(); } base.OnMouseDown(e); }
         protected override void OnMouseUp(MouseEventArgs e) { down = false; Invalidate(); base.OnMouseUp(e); }
         protected override void OnEnabledChanged(EventArgs e) { Invalidate(); base.OnEnabledChanged(e); }
@@ -396,6 +513,9 @@ namespace FindAnything.Ui
         public ButtonKind Kind = ButtonKind.Secondary;
         public string Icon = "";
         public float FontPx = 15;
+        public Image Picture;             // an illustration instead of a glyph (it tilts a little on hover)
+        public int PictureCss = 34;
+        public bool Accent;               // a secondary button with an amber edge, for the action that matters here
 
         public SkinButton(string text, string icon, ButtonKind kind)
         {
@@ -411,7 +531,8 @@ namespace FindAnything.Ui
         public int PreferredWidth(int heightCss)
         {
             int w = Theme.TextWidth(Text, Theme.UiSemibold(FontPx));
-            if (Icon.Length > 0) w += Theme.S(FontPx + 9);
+            if (Picture != null) w += Theme.S(PictureCss + 8);
+            else if (Icon.Length > 0) w += Theme.S(FontPx + 9);
             return w + Theme.S(Kind == ButtonKind.Primary ? 52 : 40) + 2 * ShadowPad;
         }
 
@@ -425,28 +546,49 @@ namespace FindAnything.Ui
             Color fg;
             if (Kind == ButtonKind.Primary)
             {
-                Skin.Draw(g, !Enabled ? "pri-off" : down ? "pri-down" : hover ? "pri-hov" : "pri", shape);
+                if (!Enabled || down) Skin.Draw(g, !Enabled ? "pri-off" : "pri-down", shape);
+                else { Skin.Draw(g, "pri", shape); Skin.Draw(g, "pri-hov", shape, hot); }
                 fg = Enabled ? Theme.AmberInk : Theme.Faint;
             }
             else if (Kind == ButtonKind.Secondary)
             {
-                Skin.Draw(g, down ? "sec-down" : hover ? "sec-hov" : "sec", shape);
-                fg = Enabled ? Theme.Text : Theme.Faint;
+                if (down) Skin.Draw(g, "sec-down", shape);
+                else { Skin.Draw(g, "sec", shape); Skin.Draw(g, "sec-hov", shape, hot); }
+                if (Accent)
+                {
+                    Theme.FillRound(g, Theme.Alpha(Theme.Amber, (int)(14 + 16 * hot)), shape, Theme.S(12));
+                    Theme.StrokeRound(g, Theme.Alpha(Theme.Amber, (int)(120 + 100 * hot)), Rectangle.Inflate(shape, -1, -1), Theme.S(11), Theme.S(1.3f));
+                }
+                fg = Enabled ? (Accent ? Anim.Mix(Theme.Text, Theme.AmberHi, hot) : Theme.Text) : Theme.Faint;
             }
             else
             {
-                if (hover) Theme.FillRound(g, Theme.Alpha(Theme.Surface2, 200), shape, Theme.S(8));
-                fg = hover ? Theme.Text : Theme.Dim;
+                if (hot > 0) Theme.FillRound(g, Theme.Alpha(Theme.Surface2, (int)(200 * hot)), shape, Theme.S(8));
+                fg = Anim.Mix(Theme.Dim, Theme.Text, hot);
             }
             if (Focused && ShowFocusCues && Kind != ButtonKind.Ghost)
                 Theme.StrokeRound(g, Theme.Alpha(Theme.AmberHi, 160), Rectangle.Inflate(shape, -Theme.S(3), -Theme.S(3)), Theme.S(9), Theme.S(1));
 
             Font f = Theme.UiSemibold(FontPx);
             int tw = Theme.TextWidth(Text, f);
-            int iw = Icon.Length > 0 ? Theme.S(FontPx) : 0;
-            int gap = Icon.Length > 0 && Text.Length > 0 ? Theme.S(9) : 0;
+            int iw = Picture != null ? Theme.S(PictureCss) : Icon.Length > 0 ? Theme.S(FontPx) : 0;
+            int gap = iw > 0 && Text.Length > 0 ? Theme.S(Picture != null ? 8 : 9) : 0;
             int x = shape.Left + (shape.Width - tw - iw - gap) / 2;
-            if (iw > 0) Glyph(g, Icon, FontPx, fg, new Rectangle(x, shape.Top, iw, shape.Height), Theme.Center);
+            if (Picture != null)
+            {
+                // the Polaroid lifts and straightens a little under the pointer
+                GraphicsState st = g.Save();
+                g.InterpolationMode = InterpolationMode.HighQualityBicubic;
+                g.PixelOffsetMode = PixelOffsetMode.HighQuality;
+                float cx = x + iw / 2f, cy = shape.Top + shape.Height / 2f - Theme.S(2) * hot;
+                g.TranslateTransform(cx, cy);
+                g.RotateTransform(5f * hot);
+                float sc = 1f + 0.08f * hot;
+                g.ScaleTransform(sc, sc);
+                g.DrawImage(Picture, new RectangleF(-iw / 2f, -iw / 2f, iw, iw));
+                g.Restore(st);
+            }
+            else if (iw > 0) Glyph(g, Icon, FontPx, fg, new Rectangle(x, shape.Top, iw, shape.Height), Theme.Center);
             TextRenderer.DrawText(g, Text, f, new Rectangle(x + iw + gap, shape.Top, tw + 2, shape.Height), fg, Theme.Left);
         }
 
@@ -526,8 +668,9 @@ namespace FindAnything.Ui
             int pad = Skin.Pad("chip");
             Rectangle shape = Rectangle.Inflate(ClientRectangle, -pad, -pad);
             bool lit = on && Toggle;
-            Skin.Draw(g, lit ? (hover ? "chip-onh" : "chip-on") : (hover ? "chip-hov" : "chip"), shape);
-            Color fg = lit ? Theme.AmberHi : (Toggle ? (hover ? Theme.Text : Theme.Dim) : Theme.Text);
+            Skin.Draw(g, lit ? "chip-on" : "chip", shape);
+            Skin.Draw(g, lit ? "chip-onh" : "chip-hov", shape, hot);
+            Color fg = lit ? Theme.AmberHi : (Toggle ? Anim.Mix(Theme.Dim, Theme.Text, hot) : Theme.Text);
             Color pre = lit ? Theme.Amber : Theme.Faint;
             Font f = Theme.Ui(13, FontStyle.Regular);
             int x = shape.Left + Theme.S(13);
@@ -562,6 +705,8 @@ namespace FindAnything.Ui
         private int selected;
         private int hoverIndex = -1;
         private Rectangle[] rects = new Rectangle[0];
+        private RectangleF pill, pillFrom;   // the selected pill, and where it slides from
+        private long slideStart = -1000;
         public event EventHandler SelectedChanged;
 
         public Tabs(string[] items, string[] icons)
@@ -578,6 +723,9 @@ namespace FindAnything.Ui
             {
                 if (selected == value) return;
                 selected = value;
+                pillFrom = pill;
+                slideStart = Anim.Now;
+                Anim.Run(delegate { Invalidate(); return !IsDisposed && Anim.Progress(slideStart, 240) < 1f; });
                 Invalidate();
                 if (SelectedChanged != null) SelectedChanged(this, EventArgs.Empty);
             }
@@ -602,20 +750,28 @@ namespace FindAnything.Ui
             Theme.FillRound(g, Theme.Surface, outer, outer.Height / 2f);
             Theme.StrokeRound(g, Theme.Line, outer, outer.Height / 2f, 1);
             rects = new Rectangle[items.Length];
+            int x0 = outer.Left + Theme.S(4);
+            for (int i = 0; i < items.Length; i++)
+            {
+                rects[i] = new Rectangle(x0, outer.Top + Theme.S(4), ItemWidth(i), outer.Height - Theme.S(8));
+                x0 += rects[i].Width;
+            }
+            // the selected pill slides from the old tab to the new one
+            RectangleF target = rects[selected];
+            float t = Anim.Ease(Anim.Progress(slideStart, 240));
+            pill = pillFrom.Width <= 0 || t >= 1f ? target : new RectangleF(pillFrom.X + (target.X - pillFrom.X) * t, target.Y, pillFrom.Width + (target.Width - pillFrom.Width) * t, target.Height);
+            for (int i = 0; i < items.Length; i++)
+                if (i == hoverIndex && i != selected) Theme.FillRound(g, Theme.Surface2, rects[i], rects[i].Height / 2f);
+            Rectangle pr = Rectangle.Round(pill);
+            Theme.FillRound(g, Color.FromArgb(0x2A, 0x24, 0x16), pr, pr.Height / 2f);
+            Theme.StrokeRound(g, Theme.Alpha(Theme.Amber, 115), pr, pr.Height / 2f, 1);
             int x = outer.Left + Theme.S(4);
             for (int i = 0; i < items.Length; i++)
             {
                 int w = ItemWidth(i);
-                Rectangle r = new Rectangle(x, outer.Top + Theme.S(4), w, outer.Height - Theme.S(8));
-                rects[i] = r;
+                Rectangle r = rects[i];
                 bool on = i == selected;
-                if (on)
-                {
-                    Theme.FillRound(g, Color.FromArgb(0x2A, 0x24, 0x16), r, r.Height / 2f);
-                    Theme.StrokeRound(g, Theme.Alpha(Theme.Amber, 115), r, r.Height / 2f, 1);
-                }
-                else if (i == hoverIndex) Theme.FillRound(g, Theme.Surface2, r, r.Height / 2f);
-                Color fg = on ? Theme.AmberHi : (i == hoverIndex ? Theme.Text : Theme.Dim);
+                Color fg = on ? Anim.Mix(Theme.Dim, Theme.AmberHi, t) : (i == hoverIndex ? Theme.Text : Theme.Dim);
                 int tx = r.Left + Theme.S(14);
                 if (icons[i].Length > 0)
                 {
