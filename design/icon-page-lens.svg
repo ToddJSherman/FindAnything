@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256">
+  <title>Find Anything</title>
+  <defs><clipPath id="lens"><circle cx="164" cy="160" r="50"/></clipPath></defs>
+  <path d="M34 20H130L170 60V214H34Z" fill="#FFFFFF" stroke="#1D2B3A" stroke-width="12" stroke-linejoin="round"/>
+  <path d="M130 20V60H170" fill="#E3E9F0" stroke="#1D2B3A" stroke-width="12" stroke-linejoin="round"/>
+  <rect x="56" y="84" width="54" height="12" rx="6" fill="#8D9BAA"/>
+  <rect x="56" y="110" width="68" height="12" rx="6" fill="#8D9BAA"/>
+  <rect x="56" y="136" width="44" height="12" rx="6" fill="#8D9BAA"/>
+  <rect x="56" y="162" width="36" height="12" rx="6" fill="#8D9BAA"/>
+  <circle cx="164" cy="160" r="50" fill="none" stroke="#FFFFFF" stroke-width="32"/>
+  <path d="M202 198L234 230" stroke="#FFFFFF" stroke-width="42" stroke-linecap="round"/>
+  <circle cx="164" cy="160" r="50" fill="#EAF4FF"/>
+  <g clip-path="url(#lens)">
+    <rect x="104" y="149" width="120" height="22" rx="4" fill="#FFB020"/>
+    <rect x="104" y="125" width="120" height="10" rx="5" fill="#B8C4D0"/>
+    <rect x="104" y="185" width="120" height="10" rx="5" fill="#B8C4D0"/>
+  </g>
+  <circle cx="164" cy="160" r="50" fill="none" stroke="#1D2B3A" stroke-width="18"/>
+  <path d="M202 198L234 230" stroke="#1D2B3A" stroke-width="28" stroke-linecap="round"/>
+</svg>

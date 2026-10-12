@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256">
+  <title>Find Anything</title>
+  <rect width="256" height="256" rx="56" fill="#1D2B3A"/>
+  <g transform="translate(128 128) scale(0.74) translate(-128 -128)">
+    <rect x="40" y="40" width="176" height="32" rx="16" fill="#FFFFFF"/>
+    <rect x="24" y="100" width="208" height="56" rx="14" fill="#FFB020"/>
+    <rect x="52" y="116" width="152" height="24" rx="12" fill="#1D2B3A"/>
+    <rect x="40" y="184" width="120" height="32" rx="16" fill="#FFFFFF"/>
+  </g>
+</svg>

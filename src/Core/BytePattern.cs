@@ -1,0 +1,354 @@
+using System;
+using System.Collections.Generic;
+using System.Text;
+
+namespace FindAnything.Core
+{
+    /// <summary>How the searched text is stored in the file.</summary>
+    public enum TextForm
+    {
+        /// <summary>One byte per ASCII character: UTF-8, ANSI, plain ASCII.</summary>
+        Bytes8 = 0,
+        /// <summary>Two bytes per character, little-endian: Windows "Unicode" text.</summary>
+        Utf16 = 1
+    }
+
+    /// <summary>
+    /// A search pattern compiled to bytes for one text form. Matching works on raw bytes, so a file is never
+    /// decoded as a whole and binary files are searched too.
+    ///
+    /// Wildcards: '*' matches any run of characters on the same line (up to StarSpan bytes) and '?' matches
+    /// one character. The pattern is a "contains" match: "Govee*6056" finds that anywhere in a line.
+    /// Case-insensitive matching folds ASCII letters A-Z only.
+    /// </summary>
+    public sealed class BytePattern
+    {
+        /// <summary>Longest run of bytes a single '*' may cover. It never crosses a line break.</summary>
+        public const int StarSpan = 1024;
+
+        /// <summary>Longest pattern accepted, in characters.</summary>
+        public const int MaxPatternChars = 1000;
+
+        private const int Any = -1;
+
+        private readonly int[][] segments;   // split at '*'; Any = one wildcard byte
+        private readonly byte[] fold;        // 256-entry case-folding table (identity when case-sensitive)
+        private readonly int unit;           // 1 or 2 bytes per character
+        private readonly bool wholeWord;
+
+        // The longest literal run in the first segment, searched with Boyer-Moore-Horspool keyed on the last
+        // two bytes of the window (a byte pair rarely repeats inside the pattern, so most steps jump m-1).
+        private readonly byte[] anchor;
+        private readonly int anchorOffset;
+        private readonly int[] shift2;
+        // shift2 re-keyed by the two raw bytes as one little-endian ushort read, case folding built in.
+        // 0 marks "these bytes fold to the anchor's last two": a candidate to verify.
+        private readonly byte[] rawShift;
+
+        /// <summary>The longest number of bytes one match can span.</summary>
+        public readonly int MaxLength;
+
+        public readonly TextForm Form;
+
+        private BytePattern(List<int[]> segs, bool caseSensitive, TextForm form, bool wholeWord)
+        {
+            segments = segs.ToArray();
+            Form = form;
+            unit = form == TextForm.Utf16 ? 2 : 1;
+            this.wholeWord = wholeWord;
+
+            fold = new byte[256];
+            for (int i = 0; i < 256; i++) fold[i] = (byte)i;
+            if (!caseSensitive)
+                for (int c = 'A'; c <= 'Z'; c++) fold[c] = (byte)(c + 32);
+
+            // Fold the literal bytes once so matching compares fold[data] against the pattern directly.
+            foreach (int[] seg in segments)
+                for (int i = 0; i < seg.Length; i++)
+                    if (seg[i] != Any) seg[i] = fold[seg[i]];
+
+            int total = 0;
+            foreach (int[] seg in segments) total += seg.Length;
+            MaxLength = total + (segments.Length - 1) * StarSpan;
+
+            // Pick the longest wildcard-free run of the first segment as the fast-search anchor.
+            int[] first = segments[0];
+            int bestStart = 0, bestLen = 0, runStart = 0;
+            for (int i = 0; i <= first.Length; i++)
+            {
+                if (i == first.Length || first[i] == Any)
+                {
+                    if (i - runStart > bestLen) { bestLen = i - runStart; bestStart = runStart; }
+                    runStart = i + 1;
+                }
+            }
+            if (bestLen > 0)
+            {
+                anchor = new byte[bestLen];
+                for (int i = 0; i < bestLen; i++) anchor[i] = (byte)first[bestStart + i];
+                anchorOffset = bestStart;
+                if (bestLen >= 2)
+                {
+                    shift2 = new int[65536];
+                    for (int i = 0; i < shift2.Length; i++) shift2[i] = bestLen - 1;
+                    for (int j = 1; j <= bestLen - 2; j++) shift2[(anchor[j - 1] << 8) | anchor[j]] = bestLen - 1 - j;
+
+                    int lastKey = (anchor[bestLen - 2] << 8) | anchor[bestLen - 1];
+                    rawShift = new byte[65536];
+                    for (int r = 0; r < 65536; r++)
+                    {
+                        int key = (fold[r & 0xFF] << 8) | fold[r >> 8];
+                        rawShift[r] = key == lastKey ? (byte)0 : (byte)Math.Min(255, shift2[key]);
+                    }
+                }
+            }
+        }
+
+        /// <summary>
+        /// Compiles the pattern for one text form. Throws ArgumentException when the pattern is empty or has
+        /// nothing in it but '*'.
+        /// </summary>
+        public static BytePattern Compile(string pattern, bool caseSensitive, bool wildcards, bool wholeWord, TextForm form)
+        {
+            if (pattern == null) pattern = "";
+            if (pattern.Length > MaxPatternChars)
+                throw new ArgumentException("The search text is longer than " + MaxPatternChars + " characters.");
+
+            Encoding enc = form == TextForm.Utf16 ? (Encoding)new UnicodeEncoding(false, false) : new UTF8Encoding(false);
+            int unitBytes = form == TextForm.Utf16 ? 2 : 1;
+
+            List<int[]> segs = new List<int[]>();
+            List<int> current = new List<int>();
+            StringBuilder literal = new StringBuilder();
+
+            for (int i = 0; i <= pattern.Length; i++)
+            {
+                char ch = i < pattern.Length ? pattern[i] : '\0';
+                bool end = i == pattern.Length;
+                bool star = !end && wildcards && ch == '*';
+                bool question = !end && wildcards && ch == '?';
+
+                if (end || star || question)
+                {
+                    if (literal.Length > 0)
+                    {
+                        foreach (byte b in enc.GetBytes(literal.ToString())) current.Add(b);
+                        literal.Length = 0;
+                    }
+                    if (question)
+                    {
+                        for (int k = 0; k < unitBytes; k++) current.Add(Any);
+                    }
+                    else if (current.Count > 0)
+                    {
+                        // A star (or the end) closes the segment. Leading and repeated stars add nothing to a
+                        // "contains" search, so empty segments are dropped.
+                        segs.Add(current.ToArray());
+                        current = new List<int>();
+                    }
+                }
+                else
+                {
+                    literal.Append(ch);
+                }
+            }
+
+            if (segs.Count == 0)
+                throw new ArgumentException("Type something to search for (a pattern of only * matches nothing).");
+
+            return new BytePattern(segs, caseSensitive, form, wholeWord);
+        }
+
+        /// <summary>
+        /// Finds the first match that starts in [from, startLimit) of buf. A match may extend up to dataEnd.
+        /// Returns the start index and sets end (exclusive), or returns -1.
+        /// Bytes before 'from' are read only as context for whole-word checks.
+        /// </summary>
+        public int Find(byte[] buf, int from, int startLimit, int dataEnd, out int end)
+        {
+            end = -1;
+            if (startLimit > dataEnd) startLimit = dataEnd;
+            if (from < 0) from = 0;
+            if (from >= startLimit) return -1;
+
+            if (anchor == null)
+            {
+                // The first segment is all '?'. Rare enough that a plain scan is fine.
+                for (int s = from; s < startLimit; s++)
+                    if (TryComplete(buf, s, dataEnd, out end)) return s;
+                return -1;
+            }
+
+            int m = anchor.Length;
+            int i = from + anchorOffset;
+            int last = Math.Min(startLimit - 1 + anchorOffset, dataEnd - m);
+            byte[] f = fold;
+
+            if (m == 1)
+            {
+                byte only = anchor[0];
+                for (; i <= last; i++)
+                {
+                    if (f[buf[i]] != only) continue;
+                    int s = i - anchorOffset;
+                    if (TryComplete(buf, s, dataEnd, out end)) return s;
+                }
+                return -1;
+            }
+
+            int lastKey = (anchor[m - 2] << 8) | anchor[m - 1];
+            while (i <= last)
+            {
+                int hit = Horspool(buf, i, last, m);
+                if (hit < 0) break;
+                int j = m - 3;
+                while (j >= 0 && f[buf[hit + j]] == anchor[j]) j--;
+                if (j < 0)
+                {
+                    int s = hit - anchorOffset;
+                    if (TryComplete(buf, s, dataEnd, out end)) return s;
+                }
+                i = hit + shift2[lastKey];
+            }
+            return -1;
+        }
+
+        /// <summary>
+        /// The hot loop: returns the first window start in [i, last] whose last two bytes equal the anchor's,
+        /// or -1. Pointer code so the JIT drops the bounds checks.
+        /// </summary>
+        private unsafe int Horspool(byte[] buf, int i, int last, int m)
+        {
+            fixed (byte* pb = buf)
+            fixed (byte* pt = rawShift)
+            {
+                byte* tail = pb + m - 2;
+                while (i <= last)
+                {
+                    int s = pt[*(ushort*)(tail + i)];
+                    if (s == 0) return i;
+                    i += s;
+                }
+            }
+            return -1;
+        }
+
+        private bool TryComplete(byte[] buf, int s, int dataEnd, out int end)
+        {
+            end = -1;
+            int[] first = segments[0];
+            if (s + first.Length > dataEnd || !SegmentAt(first, buf, s)) return false;
+            int pos = s + first.Length;
+
+            for (int k = 1; k < segments.Length; k++)
+            {
+                int[] seg = segments[k];
+                int lastStart = Math.Min(pos + StarSpan, dataEnd - seg.Length);
+                bool found = false;
+                for (int q = pos; q <= lastStart; q++)
+                {
+                    if (SegmentAt(seg, buf, q)) { pos = q + seg.Length; found = true; break; }
+                    if (buf[q] == 0x0A) break;   // '*' stops at the end of the line
+                }
+                if (!found) return false;
+            }
+
+            if (wholeWord)
+            {
+                if (s - unit >= 0 && IsWordByte(buf[s - unit])) return false;
+                if (pos < dataEnd && IsWordByte(buf[pos])) return false;
+            }
+            end = pos;
+            return true;
+        }
+
+        private bool SegmentAt(int[] seg, byte[] buf, int at)
+        {
+            for (int i = 0; i < seg.Length; i++)
+            {
+                int p = seg[i];
+                if (p != Any && fold[buf[at + i]] != p) return false;
+            }
+            return true;
+        }
+
+        private static bool IsWordByte(byte b)
+        {
+            return (b >= '0' && b <= '9') || (b >= 'A' && b <= 'Z') || (b >= 'a' && b <= 'z') || b == '_' || b >= 0x80;
+        }
+    }
+
+    /// <summary>Matches file names with the same rules as the content search (contains, * and ?).</summary>
+    public sealed class NameMatcher
+    {
+        private readonly BytePattern pattern;
+        private readonly bool caseSensitive;
+
+        public NameMatcher(string text, bool caseSensitive, bool wildcards, bool wholeWord)
+        {
+            this.caseSensitive = caseSensitive;
+            // Lower-case both sides here so names get full Unicode case folding, not just A-Z.
+            pattern = BytePattern.Compile(caseSensitive ? text : text.ToLowerInvariant(), true, wildcards, wholeWord, TextForm.Bytes8);
+        }
+
+        public bool IsMatch(string name)
+        {
+            byte[] b = Encoding.UTF8.GetBytes(caseSensitive ? name : name.ToLowerInvariant());
+            int end;
+            return pattern.Find(b, 0, b.Length, b.Length, out end) >= 0;
+        }
+    }
+
+    /// <summary>
+    /// Anchored file-mask matching for the file type filter: "*.txt", "report-??.log", "*" (case-insensitive).
+    /// </summary>
+    public static class FileMask
+    {
+        public static string[] Split(string masks)
+        {
+            List<string> list = new List<string>();
+            if (masks == null) return list.ToArray();
+            foreach (string part in masks.Split(';', ',', '|'))
+            {
+                string m = part.Trim();
+                if (m.Length == 0) continue;
+                // "txt" or ".txt" means "*.txt".
+                if (m.IndexOf('*') < 0 && m.IndexOf('?') < 0)
+                    m = m.StartsWith(".") ? "*" + m : (m.IndexOf('.') < 0 ? "*." + m : m);
+                list.Add(m);
+            }
+            return list.ToArray();
+        }
+
+        public static bool AnyMatch(string name, string[] masks)
+        {
+            foreach (string m in masks)
+                if (IsMatch(name, m)) return true;
+            return false;
+        }
+
+        /// <summary>Classic glob: '*' any run (including empty), '?' one character. Whole name must match.</summary>
+        public static bool IsMatch(string name, string mask)
+        {
+            int n = 0, m = 0, starM = -1, starN = 0;
+            while (n < name.Length)
+            {
+                if (m < mask.Length && (mask[m] == '?' || char.ToLowerInvariant(mask[m]) == char.ToLowerInvariant(name[n])))
+                {
+                    n++; m++;
+                }
+                else if (m < mask.Length && mask[m] == '*')
+                {
+                    starM = m++; starN = n;
+                }
+                else if (starM >= 0)
+                {
+                    m = starM + 1; n = ++starN;
+                }
+                else return false;
+            }
+            while (m < mask.Length && mask[m] == '*') m++;
+            return m == mask.Length;
+        }
+    }
+}
