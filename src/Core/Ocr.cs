@@ -110,11 +110,52 @@ namespace FindAnything.Core
             try { if (Directory.Exists(CacheFolder)) Directory.Delete(CacheFolder, true); } catch (Exception) { }
         }
 
+        // ------------------------------------------------------------------ CPU budget
+
+        private static readonly object gate = new object();
+        private static int reading, maxAtOnce = Math.Max(1, Environment.ProcessorCount / 4);
+
+        /// <summary>
+        /// How many pictures or scanned PDFs are OCR'd at once. Windows OCR uses one CPU thread per picture, so this is
+        /// the CPU budget; the rest of a search (plain files) is not held back. Can change while a search runs.
+        /// </summary>
+        public static int MaxAtOnce
+        {
+            get { return maxAtOnce; }
+            set { lock (gate) { maxAtOnce = Math.Max(1, value); Monitor.PulseAll(gate); } }
+        }
+
+        /// <summary>Takes an OCR slot (waiting if the budget is used up) and drops this thread to below-normal priority.</summary>
+        private static ThreadPriority Enter()
+        {
+            lock (gate)
+            {
+                while (reading >= maxAtOnce) Monitor.Wait(gate, 250);
+                reading++;
+            }
+            ThreadPriority old = Thread.CurrentThread.Priority;
+            Thread.CurrentThread.Priority = ThreadPriority.BelowNormal;
+            return old;
+        }
+
+        private static void Leave(ThreadPriority old)
+        {
+            Thread.CurrentThread.Priority = old;
+            lock (gate) { reading--; Monitor.PulseAll(gate); }
+        }
+
         /// <summary>OCR text of an image file (cached).</summary>
         public static OcrText ReadImage(string ioPath)
         {
             OcrText cached = FromCache(ioPath);
             if (cached != null) return cached;
+            ThreadPriority old = Enter();
+            try { return ReadImageNow(ioPath); }
+            finally { Leave(old); }
+        }
+
+        private static OcrText ReadImageNow(string ioPath)
+        {
             OcrText t = new OcrText();
             double scale;
             SoftwareBitmap bmp = DecodeImage(File.ReadAllBytes(ioPath), out scale);
@@ -134,6 +175,13 @@ namespace FindAnything.Core
         {
             OcrText cached = FromCache(ioPath);
             if (cached != null) return cached;
+            ThreadPriority old = Enter();
+            try { return ReadPdfNow(ioPath, ct); }
+            finally { Leave(old); }
+        }
+
+        private static OcrText ReadPdfNow(string ioPath, CancellationToken ct)
+        {
             OcrText t = new OcrText();
             IRandomAccessStream stream = ToStream(File.ReadAllBytes(ioPath));
             PdfDocument doc = Wait(PdfDocument.LoadFromStreamAsync(stream));

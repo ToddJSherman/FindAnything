@@ -5,6 +5,14 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [2026.10.12.3] - 2026-10-12
+
+### Added
+- **CPU use** now also governs OCR: shown in Search text and Find keys while Pictures (OCR) is on, it caps how many
+  pictures and scanned PDFs are OCR'd at once (Windows OCR uses one CPU thread each; measured 0.7 threads busy at 1,
+  6.1 at 8). Plain files are not held back, OCR runs at below-normal priority, and changes apply mid-search. One
+  setting for both kinds of heavy work (`CpuUse`; the old `PictureWorkers` value is carried over).
+
 ## [2026.10.12.2] - 2026-10-12
 
 ### Added

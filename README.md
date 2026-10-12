@@ -80,6 +80,11 @@ text of your pictures is stored on your PC. Turning it off deletes what was stor
 
 OCR makes mistakes: it can read an H as `1-1` or an m as `rn`. Turn on **Loose** and the search shrugs those off.
 
+**CPU use** (shown while Pictures (OCR) is on) sets how many pictures are read at once. Windows OCR uses one CPU thread
+per picture, so it is the CPU budget: on an i7-12900K, 1 at a time reads about 9 text-heavy pictures a second with less
+than one thread busy, 8 at a time about 69 a second with 6 threads busy. Plain files are not held back, OCR runs at
+below-normal priority, and the setting is shared with Similar pictures and takes effect immediately.
+
 ## Install
 
 1. Download **FindAnything-Setup.exe** from the [latest release](https://github.com/ToddJSherman/FindAnything/releases/latest).

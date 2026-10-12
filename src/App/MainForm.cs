@@ -223,10 +223,12 @@ namespace FindAnything.App
                     status.SetParts(parts.ToArray(), bold.ToArray());
                 }
             };
-            Tip(cpuSlider, "How hard Similar pictures works the processor.\nLeft: one CPU thread - cool and quiet, slower. Right: every thread - fastest, and the fans will know.\n" +
-                           "Takes effect at once, even during a search. The work always runs at low priority, so the PC stays responsive.");
+            Tip(cpuSlider, "How hard the heavy work runs: reading pictures for Similar pictures, and OCR.\n" +
+                           "Left: one picture at a time on one CPU thread - cool and quiet, slower. Right: every thread - fastest, and the fans will know.\n" +
+                           "Takes effect at once, even during a search. This work always runs at low priority, so the PC stays responsive.");
             cpuSlider.Scrolling += delegate { OnCpuSlider(); };
-            cpuSlider.Committed += delegate { OnCpuSlider(); settings.Set("PictureWorkers", CpuWorkers); };
+            cpuSlider.Committed += delegate { OnCpuSlider(); settings.Set("CpuUse", CpuWorkers); };
+            ocr.CheckedChanged += delegate { LayoutHero(); };
             clipCache.CheckedChanged += delegate
             {
                 Clip.UseCache = clipCache.Checked;
@@ -388,13 +390,18 @@ namespace FindAnything.App
                     x += cw + Theme.S(8);
                 }
             }
-            // Similar pictures: the CPU slider at the right end of the chip row
-            cpuSlider.Visible = mode == 3;
+            // CPU use, for the heavy work (Similar pictures; OCR when it is on): right end of the last chip row, or a
+            // row of its own when that row is full
+            bool cpu = mode == 3 || ((mode == 0 || mode == 1) && ocr.Checked);
+            cpuSlider.Visible = cpu;
             cpuLabelRect = cpuValueRect = Rectangle.Empty;
-            if (mode == 3)
+            if (cpu)
             {
-                int vw = Theme.S(92), sw = Theme.S(170), lw = Theme.Advance("CPU use", Theme.UiSemibold(13)) + Theme.S(4);
-                cpuValueRect = new Rectangle(R - vw, y, vw, Theme.S(32));
+                int vw = Theme.S(112), sw = Theme.S(170), lw = Theme.Advance("CPU use", Theme.UiSemibold(13)) + Theme.S(4);
+                int gw = lw + Theme.S(6) + sw + Theme.S(8) + vw;
+                if (x + Theme.S(16) + gw > limit) { y += Theme.S(40); limit = R; }
+                int right = mode == 3 || limit != R ? limit : R;
+                cpuValueRect = new Rectangle(right - vw, y, vw, Theme.S(32));
                 cpuSlider.Bounds = new Rectangle(cpuValueRect.Left - Theme.S(8) - sw, y, sw, Theme.S(32));
                 cpuLabelRect = new Rectangle(cpuSlider.Left - Theme.S(6) - lw, y, lw, Theme.S(32));
             }
@@ -439,6 +446,7 @@ namespace FindAnything.App
         private void OnCpuSlider()
         {
             if (picSearch != null) picSearch.Workers = CpuWorkers;
+            Ocr.MaxAtOnce = CpuWorkers;
             hero.Invalidate(cpuValueRect);
         }
 
@@ -662,7 +670,9 @@ namespace FindAnything.App
             clipCache.Checked = settings.GetBool("PictureCache", false);
             weaker.Checked = settings.GetBool("ShowWeakerMatches", false);
             // default: a quarter of the CPU threads (2 on an 8-thread laptop, 6 on a 24-thread desktop)
-            CpuWorkers = (int)settings.GetLong("PictureWorkers", Math.Max(1, Environment.ProcessorCount / 4));
+            CpuWorkers = (int)settings.GetLong("CpuUse", settings.GetLong("PictureWorkers", Math.Max(1, Environment.ProcessorCount / 4)));
+            settings.Remove("PictureWorkers");
+            Ocr.MaxAtOnce = CpuWorkers;
             Clip.UseCache = clipCache.Checked;
             if (!clipCache.Checked) Clip.ClearCache();
             Ocr.UseCache = ocrCache.Checked;
@@ -695,7 +705,7 @@ namespace FindAnything.App
             settings.Set("OnlyPictures", onlyPics.Checked);
             settings.Set("PictureCache", clipCache.Checked);
             settings.Set("ShowWeakerMatches", weaker.Checked);
-            settings.Set("PictureWorkers", CpuWorkers);
+            settings.Set("CpuUse", CpuWorkers);
             settings.Set("Keys.Product", kProduct.Checked);
             settings.Set("Keys.Labeled", kLabeled.Checked);
             settings.Set("Keys.Passwords", kPasswords.Checked);
