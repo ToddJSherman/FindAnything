@@ -5,6 +5,7 @@ using System.IO;
 using System.Reflection;
 using System.Threading;
 using System.Windows.Forms;
+using FindAnything.Ui;
 using Microsoft.Win32;
 
 namespace FindAnything.Setup
@@ -150,10 +151,12 @@ namespace FindAnything.Setup
                 File.Copy(self, uninstaller, true);
 
             step("Creating shortcuts...");
-            DeleteFile(StartMenuShortcut);
-            DeleteFile(DesktopShortcut);
+            // Save over an existing shortcut rather than deleting and recreating it: Explorer drops a shortcut's
+            // hotkey when it sees the delete and can miss the quick re-create, which leaves Ctrl+Alt+F dead.
             if (o.StartMenu) Shortcut(StartMenuShortcut, exe, dir, o.Hotkey ? "Ctrl+Alt+F" : "");
+            else DeleteFile(StartMenuShortcut);
             if (o.Desktop) Shortcut(DesktopShortcut, exe, dir, (!o.StartMenu && o.Hotkey) ? "Ctrl+Alt+F" : "");
+            else DeleteFile(DesktopShortcut);
 
             step("Adding the right-click menu...");
             RemoveExplorerMenu();
@@ -281,9 +284,14 @@ namespace FindAnything.Setup
             sc.WorkingDirectory = workDir;
             sc.IconLocation = target + ",0";
             sc.Description = "Find text inside files";
-            if (hotkey.Length > 0) sc.Hotkey = hotkey;
+            sc.Hotkey = hotkey;
             sc.Save();
+            // Tell Explorer the shortcut changed so it re-reads the hotkey now.
+            SHChangeNotify(0x00002000 /* SHCNE_UPDATEITEM */, 0x0005 /* SHCNF_PATHW */, lnk, IntPtr.Zero);
         }
+
+        [System.Runtime.InteropServices.DllImport("shell32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode)]
+        private static extern void SHChangeNotify(int eventId, uint flags, string item1, IntPtr item2);
 
         private static string ShortcutTarget(string lnk)
         {
@@ -365,173 +373,144 @@ namespace FindAnything.Setup
 
     internal sealed class SetupForm : Form
     {
-        private readonly TextBox folder = new TextBox();
-        private readonly CheckBox startMenu = new CheckBox();
-        private readonly CheckBox hotkey = new CheckBox();
-        private readonly CheckBox desktop = new CheckBox();
-        private readonly CheckBox explorer = new CheckBox();
-        private readonly CheckBox launch = new CheckBox();
-        private readonly Label status = new Label();
-        private readonly Button install = new Button();
-        private readonly Button cancel = new Button();
-        private readonly Button browse = new Button();
+        private readonly Backdrop body = new Backdrop();
+        private readonly SkinField folder = new SkinField(FieldStyle.Normal, Theme.GFolder);
+        private readonly SkinButton browse = new SkinButton("Browse", Theme.GOpenFolder, ButtonKind.Secondary);
+        private readonly SkinCheck startMenu, hotkey, desktop, explorer, launch;
+        private readonly SkinButton install = new SkinButton("Install", "", ButtonKind.Primary);
+        private readonly SkinButton cancel = new SkinButton("Cancel", "", ButtonKind.Secondary);
+        private readonly string existing;
+        private string status = "";
         private bool done;
+        private readonly Image icon = Skin.AppIcon();
 
         public SetupForm()
         {
             SuspendLayout();
-            AutoScaleDimensions = new SizeF(96F, 96F);
-            AutoScaleMode = AutoScaleMode.Dpi;
+            AutoScaleMode = AutoScaleMode.None;
             Text = AppInfo.Name + " Setup";
-            Font = new Font("Segoe UI", 9.75F);
+            Font = Theme.Ui(14);
+            BackColor = Theme.Bg;
             FormBorderStyle = FormBorderStyle.FixedDialog;
             MaximizeBox = false;
             StartPosition = FormStartPosition.CenterScreen;
-            AutoSize = true;
-            AutoSizeMode = AutoSizeMode.GrowAndShrink;
-            Padding = new Padding(18);
+            ClientSize = new Size(Theme.S(640), Theme.S(560));
             try { Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath); } catch (Exception) { }
 
-            string existing = Installer.ExistingVersion();
-            InstallOptions defaults = InstallOptions.Defaults();
-
-            TableLayoutPanel t = new TableLayoutPanel();
-            t.AutoSize = true;
-            t.ColumnCount = 2;
-            t.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-            t.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-
-            PictureBox logo = new PictureBox();
-            logo.SizeMode = PictureBoxSizeMode.Zoom;
-            logo.Size = new Size(64, 64);
-            logo.Margin = new Padding(0, 0, 14, 0);
-            logo.Image = LargestIconImage();
-            t.Controls.Add(logo, 0, 0);
-
-            Label title = new Label();
-            title.AutoSize = true;
-            title.Font = new Font(Font.FontFamily, 15F, FontStyle.Bold);
-            title.Text = AppInfo.Name + " " + AppInfo.Version;
-            Label sub = new Label();
-            sub.AutoSize = true;
-            sub.MaximumSize = new Size(560, 0);
-            sub.Text = "Find text inside any file: plain text, PDF, Office, Unicode, and files of any size.\n" +
-                       "Free and open source (" + AppInfo.License + "). Created by " + AppInfo.Author + "." +
-                       (existing == null ? "" : existing == AppInfo.Version ? "\n\nThis version is already installed. Installing again repairs it." : "\n\nVersion " + existing + " is installed; this updates it.");
-            FlowLayoutPanel head = new FlowLayoutPanel();
-            head.FlowDirection = FlowDirection.TopDown;
-            head.AutoSize = true;
-            head.WrapContents = false;
-            head.Controls.Add(title);
-            head.Controls.Add(sub);
-            t.Controls.Add(head, 1, 0);
-
-            FlowLayoutPanel body = new FlowLayoutPanel();
-            body.FlowDirection = FlowDirection.TopDown;
-            body.AutoSize = true;
-            body.WrapContents = false;
-            body.Margin = new Padding(0, 16, 0, 0);
-
-            Label where = new Label();
-            where.AutoSize = true;
-            where.Text = "Install to (just for you, no admin needed):";
-            body.Controls.Add(where);
-            FlowLayoutPanel folderRow = new FlowLayoutPanel();
-            folderRow.AutoSize = true;
-            folderRow.WrapContents = false;
-            folder.Width = 520;
-            folder.Text = defaults.Folder;
-            folder.Margin = new Padding(0, 4, 6, 8);
-            browse.Text = "Browse...";
-            browse.AutoSize = true;
-            browse.Margin = new Padding(0, 2, 0, 8);
-            browse.Click += delegate
-            {
-                using (FolderBrowserDialog d = new FolderBrowserDialog())
-                {
-                    d.SelectedPath = folder.Text;
-                    if (d.ShowDialog(this) == DialogResult.OK) folder.Text = Path.Combine(d.SelectedPath, AppInfo.Name);
-                }
-            };
-            folderRow.Controls.Add(folder);
-            folderRow.Controls.Add(browse);
-            body.Controls.Add(folderRow);
-
-            body.Controls.Add(Check(startMenu, "Start menu shortcut", defaults.StartMenu));
-            body.Controls.Add(Check(hotkey, "Ctrl+Alt+F opens " + AppInfo.Name, defaults.Hotkey));
-            body.Controls.Add(Check(desktop, "Desktop shortcut", defaults.Desktop));
-            body.Controls.Add(Check(explorer, "\"" + AppInfo.Name + " here\" on Explorer's right-click menu for folders and drives", defaults.ExplorerMenu));
+            existing = Installer.ExistingVersion();
+            InstallOptions d = InstallOptions.Defaults();
+            startMenu = new SkinCheck("Start menu shortcut", d.StartMenu);
+            hotkey = new SkinCheck("Ctrl+Alt+F opens " + AppInfo.Name + " from anywhere", d.Hotkey);
+            desktop = new SkinCheck("Desktop shortcut", d.Desktop);
+            explorer = new SkinCheck("\"" + AppInfo.Name + " here\" on Explorer's right-click menu", d.ExplorerMenu);
+            launch = new SkinCheck("Open " + AppInfo.Name + " now", true);
             launch.Visible = false;
-            body.Controls.Add(Check(launch, "Open " + AppInfo.Name + " now", true));
             startMenu.CheckedChanged += delegate { if (!startMenu.Checked && !desktop.Checked) hotkey.Checked = false; };
 
-            status.AutoSize = true;
-            status.ForeColor = SystemColors.GrayText;
-            status.Margin = new Padding(0, 10, 0, 0);
-            body.Controls.Add(status);
-
-            t.Controls.Add(body, 0, 1);
-            t.SetColumnSpan(body, 2);
-
-            FlowLayoutPanel buttons = new FlowLayoutPanel();
-            buttons.FlowDirection = FlowDirection.RightToLeft;
-            buttons.AutoSize = true;
-            buttons.Dock = DockStyle.Fill;
-            buttons.Margin = new Padding(0, 14, 0, 0);
-            cancel.Text = "Cancel";
-            cancel.AutoSize = true;
-            cancel.Click += delegate { Close(); };
+            folder.Text = d.Folder;
+            browse.Click += delegate
+            {
+                using (FolderBrowserDialog dlg = new FolderBrowserDialog())
+                {
+                    dlg.SelectedPath = folder.Text;
+                    if (dlg.ShowDialog(this) == DialogResult.OK) folder.Text = Path.Combine(dlg.SelectedPath, AppInfo.Name);
+                }
+            };
             install.Text = existing == null ? "Install" : existing == AppInfo.Version ? "Reinstall" : "Update";
-            install.AutoSize = true;
             install.Click += OnInstall;
-            buttons.Controls.Add(cancel);
-            buttons.Controls.Add(install);
-            t.Controls.Add(buttons, 0, 2);
-            t.SetColumnSpan(buttons, 2);
+            cancel.Click += delegate { Close(); };
 
-            Controls.Add(t);
+            body.Hero = true;
+            body.Dock = DockStyle.Fill;
+            body.Paint += PaintBody;
+            body.Controls.AddRange(new Control[] { folder, browse, startMenu, hotkey, desktop, explorer, launch, cancel, install });
+            install.SendToBack();   // its glow sits under Cancel instead of clipping it
+            Controls.Add(body);
+            LayoutControls();
             ResumeLayout(false);
-            PerformLayout();
             AcceptButton = install;
             CancelButton = cancel;
             ActiveControl = install;
         }
 
-        /// <summary>
-        /// The biggest image in the embedded app.ico. Its frames are PNG-compressed, which System.Drawing.Icon
-        /// cannot turn into a bitmap, so the PNG bytes are read straight out of the icon directory.
-        /// </summary>
-        private static Image LargestIconImage()
+        protected override void OnHandleCreated(EventArgs e)
         {
-            try
-            {
-                using (Stream s = Assembly.GetExecutingAssembly().GetManifestResourceStream("app.ico"))
-                using (BinaryReader r = new BinaryReader(s))
-                {
-                    byte[] all = r.ReadBytes((int)s.Length);
-                    int count = BitConverter.ToUInt16(all, 4);
-                    int best = -1, bestSize = 0;
-                    for (int i = 0; i < count; i++)
-                    {
-                        int w = all[6 + 16 * i];
-                        if (w == 0) w = 256;
-                        if (w > bestSize) { bestSize = w; best = i; }
-                    }
-                    int len = BitConverter.ToInt32(all, 6 + 16 * best + 8);
-                    int off = BitConverter.ToInt32(all, 6 + 16 * best + 12);
-                    return new Bitmap(new MemoryStream(all, off, len));
-                }
-            }
-            catch (Exception) { return null; }
+            base.OnHandleCreated(e);
+            Theme.DarkTitleBar(this, Color.FromArgb(17, 26, 36));
         }
 
-        private static CheckBox Check(CheckBox c, string text, bool on)
+        private void LayoutControls()
         {
-            c.Text = text;
-            c.AutoSize = true;
-            c.Checked = on;
-            c.Margin = new Padding(0, 2, 0, 2);
-            return c;
+            int L = Theme.S(32), R = ClientSize.Width - Theme.S(32);
+            int y = Theme.S(196);
+            int bp = browse.ShadowPad, fp = folder.ShadowPad;
+            int bw = browse.PreferredWidth(46) - 2 * bp;
+            browse.Bounds = Rectangle.Inflate(new Rectangle(R - bw, y, bw, Theme.S(46)), bp, bp);
+            folder.Bounds = Rectangle.Inflate(new Rectangle(L, y, R - L - bw - Theme.S(10), Theme.S(46)), fp, fp);
+            y += Theme.S(46) + Theme.S(26);
+            foreach (SkinCheck c in new[] { startMenu, hotkey, desktop, explorer })
+            {
+                c.Bounds = new Rectangle(L, y, R - L, Theme.S(30));
+                y += Theme.S(36);
+            }
+            launch.Bounds = new Rectangle(L, y + Theme.S(4), R - L, Theme.S(30));
+
+            int h = Theme.S(48), by = ClientSize.Height - Theme.S(28) - h;
+            int ip = install.ShadowPad, cp = cancel.ShadowPad;
+            int iw = Math.Max(Theme.S(140), install.PreferredWidth(48) - 2 * ip);
+            install.Bounds = Rectangle.Inflate(new Rectangle(R - iw, by, iw, h), ip, ip);
+            int cw = Math.Max(Theme.S(110), cancel.PreferredWidth(48) - 2 * cp);
+            cancel.Bounds = Rectangle.Inflate(new Rectangle(R - iw - Theme.S(12) - cw, by, cw, h), cp, cp);
+        }
+
+        private void PaintBody(object sender, PaintEventArgs e)
+        {
+            Graphics g = e.Graphics;
+            int L = Theme.S(32);
+            if (icon != null)
+            {
+                g.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBicubic;
+                g.DrawImage(icon, new Rectangle(L, Theme.S(30), Theme.S(64), Theme.S(64)));
+            }
+            int x = L + Theme.S(82);
+            Font tf = Theme.Display(28);
+            int w1 = Theme.Advance("Find ", tf);
+            TextRenderer.DrawText(g, "Find", tf, new Rectangle(x, Theme.S(30), w1 + 4, Theme.S(40)), Theme.Text, Theme.Left);
+            int w2 = Theme.Advance("Anything", tf);
+            TextRenderer.DrawText(g, "Anything", tf, new Rectangle(x + w1, Theme.S(30), w2 + 4, Theme.S(40)), Theme.AmberHi, Theme.Left);
+
+            // version chip
+            Font vf = Theme.UiSemibold(12);
+            string v = "v" + AppInfo.Version;
+            int vw = Theme.TextWidth(v, vf) + Theme.S(18);
+            Rectangle vr = new Rectangle(x + w1 + w2 + Theme.S(14), Theme.S(38), vw, Theme.S(24));
+            Theme.FillRound(g, Theme.Alpha(Theme.Amber, 34), vr, vr.Height / 2f);
+            TextRenderer.DrawText(g, v, vf, vr, Theme.AmberHi, Theme.Center);
+
+            TextRenderer.DrawText(g, "Text inside any file. Any size.", Theme.Ui(14), new Rectangle(x, Theme.S(72), Theme.S(420), Theme.S(22)), Theme.Dim, Theme.Left);
+
+            string sub = existing == null ? "Installs just for you. No admin rights needed."
+                : existing == AppInfo.Version ? "This version is already installed. Installing again repairs it."
+                : "Version " + existing + " is installed. This updates it in place.";
+            TextRenderer.DrawText(g, sub, Theme.Ui(13.5f), new Rectangle(L, Theme.S(126), ClientSize.Width - 2 * L, Theme.S(22)), Theme.Text, Theme.Left);
+            TextRenderer.DrawText(g, "Free and open source (" + AppInfo.License + "). Created by " + AppInfo.Author + ".",
+                Theme.Ui(12.5f), new Rectangle(L, Theme.S(150), ClientSize.Width - 2 * L, Theme.S(20)), Theme.Faint, Theme.Left);
+
+            TextRenderer.DrawText(g, "I\u200AN\u200AS\u200AT\u200AA\u200AL\u200AL\u200A \u200AT\u200AO", Theme.UiSemibold(11.5f), new Rectangle(L + Theme.S(1), Theme.S(174), Theme.S(200), Theme.S(18)), Theme.Faint, Theme.Left);
+
+            if (status.Length > 0)
+            {
+                int by = ClientSize.Height - Theme.S(28) - Theme.S(48);
+                TextRenderer.DrawText(g, status, Theme.Ui(13), new Rectangle(L, by, Theme.S(330), Theme.S(48)),
+                    done ? Theme.Green : Theme.Dim, TextFormatFlags.VerticalCenter | TextFormatFlags.WordBreak | TextFormatFlags.NoPrefix);
+            }
+        }
+
+        private void SetStatus(string s)
+        {
+            status = s;
+            body.Invalidate();
+            body.Update();
         }
 
         private void OnInstall(object sender, EventArgs e)
@@ -552,28 +531,30 @@ namespace FindAnything.Setup
             o.Hotkey = hotkey.Checked;
             o.Desktop = desktop.Checked;
             o.ExplorerMenu = explorer.Checked;
-            if (o.Folder.Length == 0) { status.Text = "Pick a folder to install to."; return; }
+            if (o.Folder.Length == 0) { SetStatus("Pick a folder to install to."); return; }
 
             install.Enabled = cancel.Enabled = browse.Enabled = false;
             UseWaitCursor = true;
             try
             {
-                Installer.Install(o, false, delegate(string s) { status.Text = s; status.Refresh(); });
+                Installer.Install(o, false, delegate(string s) { SetStatus(s); });
                 done = true;
-                status.Text = AppInfo.Name + " is installed. Find it in the Start menu" + (o.Hotkey ? " or press Ctrl+Alt+F" : "") + ".";
-                foreach (Control c in new Control[] { folder, startMenu, hotkey, desktop, explorer }) c.Enabled = false;
+                SetStatus("Installed. Find it in the Start menu" + (o.Hotkey ? " or press Ctrl+Alt+F." : "."));
+                foreach (Control c in new Control[] { folder, browse, startMenu, hotkey, desktop, explorer }) c.Enabled = false;
                 launch.Visible = true;
                 install.Text = "Finish";
                 install.Enabled = true;
+                cancel.Visible = false;
+                install.Invalidate();
             }
             catch (OperationCanceledException ex)
             {
-                status.Text = ex.Message;
+                SetStatus(ex.Message);
                 install.Enabled = cancel.Enabled = browse.Enabled = true;
             }
             catch (Exception ex)
             {
-                status.Text = "Install failed: " + ex.Message;
+                SetStatus("Install failed: " + ex.Message);
                 install.Enabled = cancel.Enabled = browse.Enabled = true;
             }
             finally

@@ -63,6 +63,15 @@ namespace FindAnything.Core
             return Encoding.UTF8.GetBytes(text);
         }
 
+        /// <summary>The text a result was found in, for the viewer: OCR text for pictures and scanned PDFs.</summary>
+        public static byte[] TextFor(string ioPath, string source, CancellationToken ct, out string note)
+        {
+            note = null;
+            if (source == "OCR") return Encoding.UTF8.GetBytes(Ocr.ReadImage(ioPath).Text);
+            if (source == "PDF OCR") return Encoding.UTF8.GetBytes(Ocr.ReadPdf(ioPath, ct).Text);
+            return Extract(ioPath, ct, out note);
+        }
+
         // ------------------------------------------------------------------ Office Open XML / OpenDocument
 
         private static string ExtractZipXml(string path, CancellationToken ct)

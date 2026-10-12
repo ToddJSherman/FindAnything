@@ -44,6 +44,17 @@ try:
 except TypeError:
     pass  # older PyMuPDF has no object-stream option
 
+# A "scanned" PDF: a page rendered to a picture and placed in a new PDF, so it has no text layer at all.
+src = fitz.open()
+p = src.new_page()
+p.insert_text((72, 100), PHRASE, fontname="helv", fontsize=14)
+p.insert_text((72, 130), "Serial number 5CG1234XYZ", fontname="helv", fontsize=12)
+pix = p.get_pixmap(dpi=200)
+scan = fitz.open()
+sp = scan.new_page(width=p.rect.width, height=p.rect.height)
+sp.insert_image(sp.rect, pixmap=pix)
+scan.save(os.path.join(out, "scanned.pdf"), deflate=True)
+
 # reportlab: plain drawString, and a justified paragraph (word spacing set by the layout engine).
 c = canvas.Canvas(os.path.join(out, "reportlab_canvas.pdf"), pagesize=letter)
 c.setFont("Helvetica", 12)

@@ -6,6 +6,39 @@ file is 25 GB.
 
 Everything runs on your PC. Nothing goes online.
 
+![Find Anything: search results with the match highlighted in each file](docs/screenshot-main.png)
+
+![The viewer: any file size, every match highlighted](docs/screenshot-viewer.png)
+
+## Three modes
+
+**Search text** finds any text inside any file, with the extras below.
+
+**Find keys** finds the product keys, licenses, serial numbers, passwords, PINs and tokens you stashed in a text file
+months ago, without you typing anything. It also reads documents and pictures of license stickers. Each key gets its
+own row; right-click it and choose **Copy the key**. Type a word to narrow the list to keys near it (Office, Adobe).
+
+![Find keys: product keys, serials, passwords and tokens, including one read off a photo](docs/screenshot-keys.png)
+
+**Drive check** reads a whole drive, every sector and read-only, before you sell or give it away. It tells you how
+much of the drive still holds data (a wiped drive is all zeros) and lists every place a text of yours still appears,
+including inside deleted files. It needs administrator rights; the app offers to restart with them.
+
+![Drive check: a deleted file's contents found in free space](docs/screenshot-drive.png)
+
+## Text in pictures
+
+Turn on **Pictures (OCR)** and the text in photos, screenshots and scanned PDFs becomes searchable. It uses the OCR
+engine built into Windows 10/11, so nothing leaves your PC. Open a picture and the match is boxed on the photo itself.
+
+By default nothing OCR reads is kept: pictures are read again on every search. Turn on **Remember OCR text** to keep it
+in `%LOCALAPPDATA%\FindAnything\ocr`. Each picture is then read only once and repeat searches are much faster, but the
+text of your pictures is stored on your PC. Turning it off deletes what was stored.
+
+![A product photo with the model number boxed](docs/screenshot-ocr.png)
+
+OCR makes mistakes: it can read an H as `1-1` or an m as `rn`. Turn on **Loose** and the search shrugs those off.
+
 ## Install
 
 1. Download **FindAnything-Setup.exe** from the [latest release](https://github.com/ToddJSherman/FindAnything/releases/latest).
@@ -27,6 +60,8 @@ Requires Windows 10 or 11, which already include the .NET Framework 4.8 it needs
 - **Wildcards**: `*` matches any run of characters on the same line, and `?` matches one character.
   `Govee*6056` finds "Govee RGBIC H6056". `H60?6` finds H6056 and H6066.
 - **Match case** and **whole word** switches.
+- **Loose**: ignores spaces, dashes and case, and treats look-alikes as the same (O and 0; I, l and 1; S and 5; and
+  OCR's `1-1` for H). Typing `H6056` finds `H-6056`, `h 6056` and `H6O56`.
 - **File types**: `*.txt` searches only TXT files, so a DOC that contains the text is not counted. Separate several
   types with `;`. **Except** skips types such as `*.exe;*.iso`.
 - **Reads the real text in PDF, DOCX, XLSX, PPTX and OpenDocument files.** Their text is compressed, so a plain byte
@@ -73,7 +108,8 @@ powershell -ExecutionPolicy Bypass -File tools\explorer-menu.ps1
 Command line: `FindAnything.exe "D:\Some folder"` starts with *Look in* set.
 `FindAnything.exe --view <file> --find <text>` opens only the viewer.
 
-Settings live in `%APPDATA%\FindAnything\settings.txt`, one plain-text `key=value` per line.
+Settings live in `%APPDATA%\FindAnything\settings.txt`, one plain-text `key=value` per line: only toggles and filters.
+What you type (searches, folders) is never saved.
 
 ## Build
 
@@ -91,13 +127,15 @@ skipped.
 
 ```
 src/Core/   search engine: BytePattern (wildcard matcher), Scanner (streaming), SearchJob (folders, threads),
-            DocText (Office/ODF), PdfDoc + PdfText + PdfLexer (PDF reader), LongPath
-src/App/    WinForms window, viewer, settings, folder picker, About box
+            DocText (Office/ODF), PdfDoc + PdfText + PdfLexer (PDF reader), LongPath,
+            Secrets (key/serial/password detectors), Ocr (Windows OCR + cache), RawDisk (drive check)
+src/App/    window, results list, viewer, About box; Skin.cs (theme, 9-sliced sprites, custom controls); skin/*.png
 src/Setup/  installer and uninstaller (one exe; the app and LICENSE are embedded in it)
 src/AppInfo.cs  version, credits and file details shared by both exes
 tools/      explorer-menu.ps1 (right-click menu for a copy run without the installer)
-tests/      Tests.cs (67 checks), make_pdfs.py (test PDFs from PyMuPDF and reportlab)
-design/     icon concepts and the app icon source (SVG)
+tests/      Tests.cs (123 checks), make_pdfs.py (test PDFs from PyMuPDF and reportlab)
+design/     icon concepts, the app icon source (SVG), and the UI design (ui/main.html mockup, ui/sprites.html skin)
+docs/       README screenshots
 ```
 
 ## Limits
@@ -106,14 +144,18 @@ design/     icon concepts and the app icon source (SVG)
 - `?` matches one byte in UTF-8 text, so it stands for one ASCII character but only part of an accented one.
 - Text inside ZIP, 7z or ISO archives and inside email stores is not searched, apart from the Office formats above.
 - PDFs larger than 512 MB are searched as raw bytes instead of being parsed.
-- No OCR: text that only exists as an image cannot be found.
+- OCR needs a Windows language with text recognition (English has it). OCR reads up to 40 pages of a scanned PDF.
+- Find keys works by patterns, so it can miss a key written in an unusual way and list a code that only looks like a key.
+- A crypto-erased drive can read as random data, so Drive check reports it as holding data even though it is wiped.
 
 ## Credits
 
-Created by **[ToddJSherman](https://github.com/ToddJSherman)**.
+Created by **Todd J Sherman** ([@ToddJSherman](https://github.com/ToddJSherman)).
 
 The search engine, PDF reader, viewer and installer are written from scratch in C#, with no third-party libraries.
+The look was designed in HTML/CSS (`design/ui/main.html`). `tools/make-skin.ps1` renders its controls and cuts them into
+the PNG sprites the app draws, so the app matches the design.
 
 ## License
 
-[MIT](LICENSE). Copyright (c) 2026 ToddJSherman. Use it, change it and share it. Keep the copyright notice.
+[MIT](LICENSE). Copyright (c) 2026 Todd J Sherman. Use it, change it and share it. Keep the copyright notice.

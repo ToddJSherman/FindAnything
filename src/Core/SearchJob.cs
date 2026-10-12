@@ -2,6 +2,7 @@ using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.IO;
+using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -14,6 +15,7 @@ namespace FindAnything.Core
         public bool CaseSensitive;
         public bool Wildcards = true;
         public bool WholeWord;
+        public bool Loose;                      // ignore spacing/punctuation, O=0 and I=l=1
         public bool SearchContents = true;
         public bool SearchNames;
         public string IncludeMasks = "";        // empty = every file type
@@ -24,6 +26,9 @@ namespace FindAnything.Core
         public long MaxFileBytes;               // 0 = no limit (content search only)
         public int Threads = 4;
         public bool SkipCloudOnly = true;       // OneDrive "online-only" files would download if read
+        public bool Ocr;                        // read the text in pictures and scanned PDFs (Windows OCR)
+        public bool SecretsMode;                // list keys, serials, passwords... instead of searching for Text
+        public SecretOptions Secrets = new SecretOptions();
     }
 
     /// <summary>
@@ -48,6 +53,7 @@ namespace FindAnything.Core
         public long SkippedLarge;
         public long SkippedCloud;
         public long Folders;
+        public long OcrFiles;        // pictures and scanned PDF pages read with OCR (or from its cache)
         public volatile string Current = "";
 
         public const int MaxErrorsKept = 2000;
@@ -55,12 +61,13 @@ namespace FindAnything.Core
         public SearchJob(SearchSettings settings)
         {
             set = settings;
-            if (!set.SearchContents && !set.SearchNames)
+            if (!set.SecretsMode && !set.SearchContents && !set.SearchNames)
                 throw new ArgumentException("Pick at least one of: file contents, file names.");
-            if (set.SearchContents)
-                scanner = new Scanner(set.Text, set.CaseSensitive, set.Wildcards, set.WholeWord, set.Utf16);
-            if (set.SearchNames)
-                names = new NameMatcher(set.Text, set.CaseSensitive, set.Wildcards, set.WholeWord);
+            if (set.SecretsMode) { }
+            else if (set.SearchContents)
+                scanner = new Scanner(set.Text, set.CaseSensitive, set.Wildcards, set.WholeWord, set.Utf16, set.Loose);
+            if (set.SearchNames && !set.SecretsMode)
+                names = new NameMatcher(set.Text, set.CaseSensitive, set.Wildcards, set.WholeWord, set.Loose);
             include = FileMask.Split(set.IncludeMasks);
             exclude = FileMask.Split(set.ExcludeMasks);
             List<string> dirs = new List<string>();
@@ -160,6 +167,7 @@ namespace FindAnything.Core
             }
             catch (Exception) { }
 
+            if (set.SecretsMode) { FindSecrets(fi, hit, ct); return; }
             if (names != null && names.IsMatch(name)) hit.NameMatch = true;
 
             if (scanner != null)
@@ -193,26 +201,21 @@ namespace FindAnything.Core
             }
         }
 
-        /// <summary>Searches one file's contents, extracting document text first when that applies.</summary>
+        /// <summary>Searches one file's contents, extracting document or picture text first when that applies.</summary>
         public void SearchContents(FileHit hit, byte[] buf, CancellationToken ct)
         {
-            string path = hit.IoPath;
-            if (set.LookInsideDocuments && DocText.KindOf(path) != null)
+            string source;
+            byte[] text = ExtractedText(hit, ct, out source);
+            if (text != null)
             {
-                string note;
-                byte[] text = DocText.Extract(path, ct, out note);
-                if (note != null) AddError(hit.Path + ": " + note);
-                if (text != null)
-                {
-                    Interlocked.Add(ref BytesRead, hit.Size);
-                    hit.Source = DocText.KindOf(path);
-                    using (MemoryStream ms = new MemoryStream(text, false))
-                        scanner.Scan(ms, buf, hit, ct, false);
-                    return;
-                }
+                Interlocked.Add(ref BytesRead, hit.Size);
+                hit.Source = source;
+                using (MemoryStream ms = new MemoryStream(text, false))
+                    scanner.Scan(ms, buf, hit, ct, false);
+                return;
             }
 
-            using (FileStream fs = new FileStream(path, FileMode.Open, FileAccess.Read,
+            using (FileStream fs = new FileStream(hit.IoPath, FileMode.Open, FileAccess.Read,
                 FileShare.ReadWrite | FileShare.Delete, 4096, FileOptions.SequentialScan))
             {
                 long n = scanner.Scan(fs, buf, hit, ct, true);
@@ -220,6 +223,103 @@ namespace FindAnything.Core
             }
         }
 
+        /// <summary>
+        /// The readable text of a document (PDF, Office), a picture (OCR) or a scanned PDF (OCR), as UTF-8; or null
+        /// when the file should be searched as raw bytes.
+        /// </summary>
+        private byte[] ExtractedText(FileHit hit, CancellationToken ct, out string source)
+        {
+            source = "";
+            string path = hit.IoPath;
+            if (set.Ocr && Ocr.IsImage(path))
+            {
+                try
+                {
+                    OcrText t = Ocr.ReadImage(path);
+                    Interlocked.Increment(ref OcrFiles);
+                    source = "OCR";
+                    return Encoding.UTF8.GetBytes(t.Text);
+                }
+                catch (Exception ex)
+                {
+                    AddError(hit.Path + ": picture not readable (" + ex.Message + "); searched as raw bytes");
+                    return null;
+                }
+            }
+            if (set.LookInsideDocuments && DocText.KindOf(path) != null)
+            {
+                string note;
+                byte[] text = DocText.Extract(path, ct, out note);
+                if (text != null && set.Ocr && DocText.KindOf(path) == "PDF" && IsBlank(text))
+                {
+                    try
+                    {
+                        OcrText t = Ocr.ReadPdf(path, ct);
+                        Interlocked.Increment(ref OcrFiles);
+                        source = "PDF OCR";
+                        return Encoding.UTF8.GetBytes(t.Text);
+                    }
+                    catch (OperationCanceledException) { throw; }
+                    catch (Exception ex) { note = "scanned PDF could not be read (" + ex.Message + ")"; }
+                }
+                if (note != null) AddError(hit.Path + ": " + note);
+                if (text != null) { source = DocText.KindOf(path); return text; }
+            }
+            return null;
+        }
+
+        private static bool IsBlank(byte[] text)
+        {
+            foreach (byte b in text) if (b > 32) return false;
+            return true;
+        }
+
+        /// <summary>Keys mode: one result row per key, serial, password or token found in the file.</summary>
+        private void FindSecrets(FileInfo fi, FileHit file, CancellationToken ct)
+        {
+            if (set.MaxFileBytes > 0 && file.Size > set.MaxFileBytes) { Interlocked.Increment(ref SkippedLarge); return; }
+            if (set.SkipCloudOnly && IsCloudOnly(fi)) { Interlocked.Increment(ref SkippedCloud); return; }
+            List<SecretFinding> found;
+            string source;
+            try
+            {
+                byte[] text = ExtractedText(file, ct, out source);
+                if (text != null)
+                {
+                    using (MemoryStream ms = new MemoryStream(text, false)) found = SecretScanner.Scan(ms, set.Secrets, Encoding.UTF8, ct);
+                }
+                else
+                {
+                    using (FileStream fs = new FileStream(file.IoPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete, 4096, FileOptions.SequentialScan))
+                    {
+                        byte[] head = new byte[4096];
+                        int n = fs.Read(head, 0, head.Length);
+                        if (!SecretScanner.LooksLikeText(head, n)) return;   // programs, pictures, archives: no
+                        fs.Position = 0;
+                        found = SecretScanner.Scan(fs, set.Secrets, null, ct);
+                    }
+                }
+                Interlocked.Add(ref BytesRead, file.Size);
+            }
+            catch (OperationCanceledException) { throw; }
+            catch (Exception ex) { AddError(file.Path + ": " + ex.Message); return; }
+
+            string filter = (set.Text ?? "").Trim();
+            foreach (SecretFinding f in found)
+            {
+                if (filter.Length > 0 && f.Line.IndexOf(filter, StringComparison.OrdinalIgnoreCase) < 0 &&
+                    file.Name.IndexOf(filter, StringComparison.OrdinalIgnoreCase) < 0) continue;
+                FileHit h = new FileHit();
+                h.IoPath = file.IoPath; h.Path = file.Path; h.Name = file.Name; h.Folder = file.Folder;
+                h.Size = file.Size; h.Modified = file.Modified; h.Source = source;
+                h.Secret = f;
+                h.ContentHits = 1;
+                h.FirstLine = f.LineNumber;
+                h.Preview = f.Line;
+                Interlocked.Increment(ref HitCount);
+                Hits.Enqueue(h);
+            }
+        }
         public static bool IsCloudOnly(FileInfo fi)
         {
             try

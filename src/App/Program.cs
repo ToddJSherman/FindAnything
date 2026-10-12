@@ -7,8 +7,17 @@ namespace FindAnything.App
 {
     internal static class Program
     {
+        private static string[] Skip1(string[] a)
+        {
+            string[] r = new string[a.Length - 1];
+            Array.Copy(a, 1, r, 0, r.Length);
+            return r;
+        }
+
         // FindAnything.exe [folder]                       start with "Look in" set
         // FindAnything.exe --view <file> [--find <text>]  open just the viewer
+        // FindAnything.exe --keys [folder]                start in Find keys
+        // FindAnything.exe --drive-check                  start in Drive check (used when restarting as admin)
         [STAThread]
         private static void Main(string[] args)
         {
@@ -29,11 +38,14 @@ namespace FindAnything.App
                 if (kind != null) hit.Source = kind;
                 ViewOptions o = new ViewOptions();
                 o.Text = find;
-                Application.Run(new ViewerForm(hit, o));
+                if (Ocr.IsImage(hit.Path)) { hit.Source = "OCR"; o.Loose = true; Application.Run(new ImageViewerForm(hit, o)); }
+                else Application.Run(new ViewerForm(hit, o));
                 return;
             }
 
             MainForm form = new MainForm();
+            if (args.Length > 0 && args[0] == "--drive-check") { form.StartMode = 2; args = new string[0]; }
+            else if (args.Length > 0 && args[0] == "--keys") { form.StartMode = 1; args = Skip1(args); }
             if (args.Length > 0)
             {
                 string start = CleanPathArg(args[0]);

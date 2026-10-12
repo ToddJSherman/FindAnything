@@ -7,6 +7,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Forms;
 using FindAnything.Core;
+using FindAnything.Ui;
 
 namespace FindAnything.App
 {
@@ -17,12 +18,13 @@ namespace FindAnything.App
         public bool Wildcards = true;
         public bool WholeWord;
         public bool Utf16 = true;
+        public bool Loose;
     }
 
     /// <summary>Random-access bytes: the file itself, or text pulled out of a PDF / Office document.</summary>
     internal sealed class ByteSource : IDisposable
     {
-        private readonly FileStream fs;
+        private readonly Stream fs;
         private readonly byte[] mem;
         public readonly long Length;
 
@@ -30,6 +32,13 @@ namespace FindAnything.App
         {
             fs = new FileStream(ioPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete, 4096, FileOptions.RandomAccess);
             Length = fs.Length;
+        }
+
+        /// <summary>Any seekable stream: a raw drive (AlignedStream), for example.</summary>
+        public ByteSource(Stream s)
+        {
+            fs = s;
+            Length = s.Length;
         }
 
         public ByteSource(byte[] data)
@@ -82,17 +91,30 @@ namespace FindAnything.App
         private ByteSource source;
         private bool extracted;     // source is UTF-8 text pulled out of a document
 
-        private readonly TextBox findText = new TextBox();
-        private readonly CheckBox matchCase = new CheckBox();
-        private readonly Button prevButton = new Button();
-        private readonly Button nextButton = new Button();
+        private readonly SkinField findField = new SkinField(FieldStyle.Normal, Theme.GSearch);
+        private TextBox findText { get { return findField.Box; } }
+        private readonly Chip matchCase = new Chip("Match case", "Aa", false);
+        private readonly SkinButton prevButton = new SkinButton("Previous", Theme.GPrev, ButtonKind.Secondary);
+        private readonly SkinButton nextButton = new SkinButton("Next", Theme.GNext, ButtonKind.Secondary);
         private readonly Label findStatus = new Label();
-        private readonly ComboBox encodingBox = new ComboBox();
-        private readonly CheckBox wrap = new CheckBox();
+        private readonly Chip encodingChip = new Chip("Auto", Theme.GEncoding, true);
+        private int encodingIndex;
+        private static readonly string[] EncodingNames = { "Auto", "UTF-8", "UTF-16 LE", "Windows-1252" };
+        private readonly Chip wrap = new Chip("Wrap", Theme.GWrap, true);
+        private readonly SkinButton moreButton = new SkinButton("", "\uE712", ButtonKind.Ghost);
         private readonly RichTextBox text = new RichTextBox();
-        private readonly HScrollBar position = new HScrollBar();
+        private readonly Slider position = new Slider();
         private readonly Label windowInfo = new Label();
-        private readonly Button firstPage = new Button(), prevPage = new Button(), nextPage = new Button(), lastPage = new Button();
+        private readonly SkinButton firstPage = new SkinButton("Start", Theme.GFirst, ButtonKind.Secondary);
+        private readonly SkinButton prevPage = new SkinButton("Page", Theme.GLeft, ButtonKind.Secondary);
+        private readonly SkinButton nextPage = new SkinButton("Page", Theme.GRight, ButtonKind.Secondary);
+        private readonly SkinButton lastPage = new SkinButton("End", Theme.GLast, ButtonKind.Secondary);
+        private readonly Backdrop topBar = new Backdrop();
+        private readonly Backdrop bottomBar = new Backdrop();
+
+        private static readonly Color TextColor = Color.FromArgb(214, 223, 233);
+        private static readonly Color MatchBack = Color.FromArgb(74, 58, 18);
+        private static readonly Color MatchFore = Color.FromArgb(255, 210, 122);
 
         private BytePattern pattern;
         private long windowStart, windowEnd;
@@ -101,7 +123,6 @@ namespace FindAnything.App
         private readonly List<long[]> windowMatches = new List<long[]>();   // absolute {start, end, charStart, charLen}
         private long curStart = -1, curEnd = -1;
         private CancellationTokenSource searchCts;
-        private bool scrolling;
 
         public ViewerForm(FileHit hit, ViewOptions opts)
         {
@@ -109,26 +130,33 @@ namespace FindAnything.App
             this.opts = opts;
 
             SuspendLayout();
-            AutoScaleDimensions = new SizeF(96F, 96F);
-            AutoScaleMode = AutoScaleMode.Dpi;
+            AutoScaleMode = AutoScaleMode.None;
             Text = hit.Name + "  -  " + (hit.Folder ?? Path.GetDirectoryName(hit.Path));
-            Font = new Font("Segoe UI", 9.75F);
-            ClientSize = new Size(1100, 720);
-            MinimumSize = new Size(640, 360);
+            Font = Theme.Ui(14);
+            BackColor = Theme.Bg;
+            ForeColor = Theme.Text;
+            ClientSize = new Size(Theme.S(1100), Theme.S(740));
+            MinimumSize = new Size(Theme.S(720), Theme.S(400));
             StartPosition = FormStartPosition.CenterParent;
             KeyPreview = true;
             try { Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath); } catch (Exception) { }
 
             text.Dock = DockStyle.Fill;
             text.ReadOnly = true;
-            text.BackColor = SystemColors.Window;
+            text.BackColor = Theme.Bg;
+            text.ForeColor = TextColor;
             text.HideSelection = false;
             text.DetectUrls = false;
             text.WordWrap = true;
-            text.Font = new Font("Consolas", 10.5F);
+            text.Font = Theme.Mono(14);
             text.BorderStyle = BorderStyle.None;
             text.ScrollBars = RichTextBoxScrollBars.Both;
-            Controls.Add(text);
+            Panel textPad = new Panel();
+            textPad.Dock = DockStyle.Fill;
+            textPad.BackColor = Theme.Bg;
+            textPad.Padding = new Padding(Theme.S(22), Theme.S(10), Theme.S(4), 0);
+            textPad.Controls.Add(text);
+            Controls.Add(textPad);
             Controls.Add(BuildTop());
             Controls.Add(BuildBottom());
             ResumeLayout(false);
@@ -138,22 +166,21 @@ namespace FindAnything.App
             matchCase.Checked = opts.CaseSensitive;
         }
 
+        protected override void OnHandleCreated(EventArgs e)
+        {
+            base.OnHandleCreated(e);
+            Theme.DarkTitleBar(this, Theme.Bg2);
+            Theme.DarkScrollbars(text);
+        }
+
         private Control BuildTop()
         {
-            TableLayoutPanel t = new TableLayoutPanel();
-            t.Dock = DockStyle.Top;
-            t.AutoSize = true;
-            t.Padding = new Padding(8, 8, 8, 4);
-            t.ColumnCount = 9;
-            t.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-            t.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 40F));
-            for (int i = 0; i < 4; i++) t.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-            t.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 60F));
-            t.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-            t.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+            topBar.Dock = DockStyle.Top;
+            topBar.Fill = Theme.Bg2;
+            topBar.BottomLine = Theme.Line;
+            topBar.Height = Theme.S(70);
 
-            findText.Dock = DockStyle.Fill;
-            findText.Margin = new Padding(0, 3, 6, 3);
+            findField.SetPlaceholder("Find in this file");
             findText.KeyDown += delegate(object s, KeyEventArgs e)
             {
                 if (e.KeyCode == Keys.Enter)
@@ -163,107 +190,148 @@ namespace FindAnything.App
                 }
             };
             findText.TextChanged += delegate { pattern = null; };
-            matchCase.Text = "Match case";
-            matchCase.AutoSize = true;
-            matchCase.Margin = new Padding(0, 5, 8, 0);
             matchCase.CheckedChanged += delegate { pattern = null; RefreshHighlights(); };
-            Btn(prevButton, "< Previous", delegate { GoPrevious(); });
-            Btn(nextButton, "Next >", delegate { GoNext(); });
-            findStatus.AutoSize = true;
-            findStatus.Anchor = AnchorStyles.Left;
-            findStatus.Margin = new Padding(6, 6, 6, 0);
-            findStatus.ForeColor = SystemColors.GrayText;
+            prevButton.Click += delegate { GoPrevious(); };
+            nextButton.Click += delegate { GoNext(); };
+            findStatus.AutoSize = false;
+            findStatus.BackColor = Color.Transparent;
+            findStatus.ForeColor = Theme.Dim;
+            findStatus.Font = Theme.Ui(13);
+            findStatus.TextAlign = ContentAlignment.MiddleLeft;
+            findStatus.AutoEllipsis = true;
 
-            encodingBox.DropDownStyle = ComboBoxStyle.DropDownList;
-            encodingBox.Items.AddRange(new object[] { "Auto", "UTF-8", "UTF-16 LE", "Windows-1252" });
-            encodingBox.SelectedIndex = 0;
-            encodingBox.Width = 120;
-            encodingBox.Margin = new Padding(0, 3, 8, 3);
-            encodingBox.SelectedIndexChanged += delegate { pattern = null; LoadWindow(windowStart, curStart, false); };
-            wrap.Text = "Wrap";
-            wrap.AutoSize = true;
+            encodingChip.Toggle = false;
+            encodingChip.Suffix = Theme.GDown;
+            encodingChip.Click += delegate
+            {
+                ContextMenuStrip m = DarkMenuRenderer.Menu();
+                for (int i = 0; i < EncodingNames.Length; i++)
+                {
+                    int idx = i;
+                    ToolStripMenuItem item = new ToolStripMenuItem(EncodingNames[i]);
+                    item.Checked = i == encodingIndex;
+                    item.Click += delegate
+                    {
+                        encodingIndex = idx;
+                        encodingChip.Text = EncodingNames[idx];
+                        LayoutTop();
+                        pattern = null;
+                        LoadWindow(windowStart, curStart, false);
+                    };
+                    m.Items.Add(item);
+                }
+                m.ShowCheckMargin = true;
+                m.Show(encodingChip, new Point(0, encodingChip.Height));
+            };
             wrap.Checked = true;
-            wrap.Margin = new Padding(0, 5, 0, 0);
             wrap.CheckedChanged += delegate { text.WordWrap = wrap.Checked; ScrollToCurrent(); };
+            moreButton.FontPx = 16;
+            moreButton.Click += delegate
+            {
+                ContextMenuStrip m = DarkMenuRenderer.Menu();
+                m.Items.Add("Open with its usual program", null, delegate { OpenDefault(); });
+                m.Items.Add("Show in folder", null, delegate { Shell.ShowInFolder(hit.Path); });
+                m.Items.Add("Copy path", null, delegate { Clipboard.SetText(hit.Path); });
+                m.Show(moreButton, new Point(moreButton.Width - m.PreferredSize.Width, moreButton.Height));
+            };
 
-            Label find = new Label();
-            find.Text = "Find:";
-            find.AutoSize = true;
-            find.Anchor = AnchorStyles.Left;
-            find.Margin = new Padding(0, 6, 6, 0);
+            topBar.Controls.AddRange(new Control[] { findField, matchCase, prevButton, nextButton, findStatus, encodingChip, wrap, moreButton });
+            topBar.Resize += delegate { LayoutTop(); };
 
-            t.Controls.Add(find, 0, 0);
-            t.Controls.Add(findText, 1, 0);
-            t.Controls.Add(matchCase, 2, 0);
-            t.Controls.Add(prevButton, 3, 0);
-            t.Controls.Add(nextButton, 4, 0);
-            t.Controls.Add(new Label { AutoSize = true, Margin = new Padding(0) }, 5, 0);
-            t.Controls.Add(findStatus, 6, 0);
-            t.Controls.Add(encodingBox, 7, 0);
-            t.Controls.Add(wrap, 8, 0);
-
-            ContextMenuStrip more = new ContextMenuStrip();
-            more.Items.Add("Open with its usual program", null, delegate { OpenDefault(); });
-            more.Items.Add("Show in folder", null, delegate { Shell.ShowInFolder(hit.Path); });
-            more.Items.Add("Copy path", null, delegate { Clipboard.SetText(hit.Path); });
-            text.ContextMenuStrip = BuildTextMenu(more);
-            return t;
-        }
-
-        private ContextMenuStrip BuildTextMenu(ContextMenuStrip more)
-        {
-            ContextMenuStrip m = new ContextMenuStrip();
+            ContextMenuStrip menu = DarkMenuRenderer.Menu();
             ToolStripMenuItem copy = new ToolStripMenuItem("Copy", null, delegate { if (text.SelectionLength > 0) text.Copy(); });
             copy.ShortcutKeyDisplayString = "Ctrl+C";
-            m.Items.Add(copy);
-            m.Items.Add(new ToolStripSeparator());
-            while (more.Items.Count > 0) m.Items.Add(more.Items[0]);
-            return m;
+            menu.Items.Add(copy);
+            menu.Items.Add(new ToolStripSeparator());
+            menu.Items.Add("Open with its usual program", null, delegate { OpenDefault(); });
+            menu.Items.Add("Show in folder", null, delegate { Shell.ShowInFolder(hit.Path); });
+            menu.Items.Add("Copy path", null, delegate { Clipboard.SetText(hit.Path); });
+            text.ContextMenuStrip = menu;
+            return topBar;
+        }
+
+        private void LayoutTop()
+        {
+            int W = topBar.Width, y = Theme.S(14), h = Theme.S(42);
+            int L = Theme.S(18), R = W - Theme.S(14);
+            int fp = findField.ShadowPad, bp = prevButton.ShadowPad, cp = Skin.Pad("chip");
+
+            int mw = Theme.S(40);
+            moreButton.Bounds = new Rectangle(R - mw, y, mw, h);
+            R -= mw + Theme.S(6);
+            int ww = wrap.PreferredWidth() - 2 * cp;
+            wrap.Bounds = Rectangle.Inflate(new Rectangle(R - ww, y + Theme.S(5), ww, Theme.S(32)), cp, cp);
+            R -= ww + Theme.S(8);
+            int ew = encodingChip.PreferredWidth() - 2 * cp;
+            encodingChip.Bounds = Rectangle.Inflate(new Rectangle(R - ew, y + Theme.S(5), ew, Theme.S(32)), cp, cp);
+            R -= ew + Theme.S(14);
+
+            int fw = Math.Max(Theme.S(200), Math.Min(Theme.S(360), W / 4));
+            findField.Bounds = Rectangle.Inflate(new Rectangle(L, y, fw, h), fp, fp);
+            int x = L + fw + Theme.S(10);
+            int mcw = matchCase.PreferredWidth() - 2 * cp;
+            matchCase.Bounds = Rectangle.Inflate(new Rectangle(x, y + Theme.S(5), mcw, Theme.S(32)), cp, cp);
+            x += mcw + Theme.S(10);
+            prevButton.FontPx = nextButton.FontPx = 14;
+            int pw = prevButton.PreferredWidth(42) - 2 * bp - Theme.S(8);
+            prevButton.Bounds = Rectangle.Inflate(new Rectangle(x, y, pw, h), bp, bp);
+            x += pw + Theme.S(8);
+            int nw = nextButton.PreferredWidth(42) - 2 * bp - Theme.S(8);
+            nextButton.Bounds = Rectangle.Inflate(new Rectangle(x, y, nw, h), bp, bp);
+            x += nw + Theme.S(14);
+            findStatus.Bounds = new Rectangle(x, y + (h - Theme.S(24)) / 2, Math.Max(0, R - x), Theme.S(24));   // one line; ellipsis if tight
         }
 
         private Control BuildBottom()
         {
-            TableLayoutPanel b = new TableLayoutPanel();
-            b.Dock = DockStyle.Bottom;
-            b.AutoSize = true;
-            b.Padding = new Padding(8, 4, 8, 6);
-            b.ColumnCount = 6;
-            b.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
-            for (int i = 0; i < 5; i++) b.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-
-            position.Anchor = AnchorStyles.Left | AnchorStyles.Right;
-            position.Height = SystemInformation.HorizontalScrollBarHeight;
-            position.Minimum = 0;
-            position.Maximum = 10000 + 499;
-            position.LargeChange = 500;
-            position.SmallChange = 10;
-            position.Margin = new Padding(0, 6, 8, 0);
-            position.Scroll += OnPositionScroll;
-            windowInfo.AutoSize = true;
-            windowInfo.Anchor = AnchorStyles.Left;
-            windowInfo.Margin = new Padding(0, 6, 8, 0);
-            windowInfo.ForeColor = SystemColors.GrayText;
-            Btn(firstPage, "Start", delegate { LoadWindow(0, -1, false); });
-            Btn(prevPage, "< Page", delegate { LoadWindow(windowStart - (WindowBytes - 4096), -1, false); });
-            Btn(nextPage, "Page >", delegate { LoadWindow(windowEnd - 4096, -1, false); });
-            Btn(lastPage, "End", delegate { LoadWindow(long.MaxValue, -1, false); });
-            b.Controls.Add(position, 0, 0);
-            b.Controls.Add(windowInfo, 1, 0);
-            b.Controls.Add(firstPage, 2, 0);
-            b.Controls.Add(prevPage, 3, 0);
-            b.Controls.Add(nextPage, 4, 0);
-            b.Controls.Add(lastPage, 5, 0);
-            return b;
+            bottomBar.Dock = DockStyle.Bottom;
+            bottomBar.Fill = Theme.Bg2;
+            bottomBar.Height = Theme.S(58);
+            bottomBar.Paint += delegate(object s, PaintEventArgs e)
+            {
+                using (Pen p = new Pen(Theme.Line)) e.Graphics.DrawLine(p, 0, 0, bottomBar.Width, 0);
+            };
+            position.Scrolling += delegate
+            {
+                if (source == null) return;
+                windowInfo.Text = "Go to " + Fmt.Size((long)((source.Length - WindowBytes) * position.Value)) + " of " + Fmt.Size(source.Length);
+            };
+            position.Committed += delegate
+            {
+                if (source == null) return;
+                LoadWindow((long)((source.Length - WindowBytes) * position.Value), -1, false);
+            };
+            windowInfo.AutoSize = false;
+            windowInfo.BackColor = Color.Transparent;
+            windowInfo.ForeColor = Theme.Dim;
+            windowInfo.Font = Theme.Ui(12.5f);
+            windowInfo.TextAlign = ContentAlignment.MiddleRight;
+            firstPage.Click += delegate { LoadWindow(0, -1, false); };
+            prevPage.Click += delegate { LoadWindow(windowStart - (WindowBytes - 4096), -1, false); };
+            nextPage.Click += delegate { LoadWindow(windowEnd - 4096, -1, false); };
+            lastPage.Click += delegate { LoadWindow(long.MaxValue, -1, false); };
+            foreach (SkinButton b in new[] { firstPage, prevPage, nextPage, lastPage }) b.FontPx = 13;
+            bottomBar.Controls.AddRange(new Control[] { position, windowInfo, firstPage, prevPage, nextPage, lastPage });
+            bottomBar.Resize += delegate { LayoutBottom(); };
+            return bottomBar;
         }
 
-        private static void Btn(Button b, string label, EventHandler click)
+        private void LayoutBottom()
         {
-            b.Text = label;
-            b.AutoSize = true;
-            b.AutoSizeMode = AutoSizeMode.GrowAndShrink;
-            b.Padding = new Padding(6, 1, 6, 1);
-            b.Margin = new Padding(0, 2, 6, 2);
-            b.Click += click;
+            int W = bottomBar.Width, h = Theme.S(34), y = (bottomBar.Height - h) / 2;
+            int R = W - Theme.S(18);
+            int bp = firstPage.ShadowPad;
+            foreach (SkinButton b in new[] { lastPage, nextPage, prevPage, firstPage })
+            {
+                int w = b.PreferredWidth(34) - 2 * bp - Theme.S(14);
+                b.Bounds = Rectangle.Inflate(new Rectangle(R - w, y, w, h), bp, bp);
+                R -= w + Theme.S(8);
+            }
+            R -= Theme.S(8);
+            int infoW = Theme.S(250);
+            windowInfo.Bounds = new Rectangle(R - infoW, y, infoW, h);
+            R -= infoW + Theme.S(16);
+            position.Bounds = new Rectangle(Theme.S(14), y, Math.Max(Theme.S(40), R - Theme.S(14)), h);
         }
 
         protected override void OnShown(EventArgs e)
@@ -275,6 +343,18 @@ namespace FindAnything.App
                 Open(new ByteSource(hit.IoPath ?? hit.Path), false);
                 return;
             }
+            if (kind == "DISK")
+            {
+                // a whole drive, read-only, through sector-aligned reads
+                try
+                {
+                    string p = hit.IoPath;
+                    int index = int.Parse(p.Substring(p.IndexOf("PhysicalDrive", StringComparison.OrdinalIgnoreCase) + 13));
+                    Open(new ByteSource(RawDisk.Open(index)), false);
+                }
+                catch (Exception ex) { text.Text = "Could not open the drive: " + ex.Message; }
+                return;
+            }
 
             // A document: pull its text out first (in the background, PDFs can take a moment).
             text.Text = "Reading the text out of this " + kind + "...";
@@ -283,7 +363,7 @@ namespace FindAnything.App
             Task<byte[]> t = Task.Factory.StartNew(delegate
             {
                 string note;
-                byte[] b = DocText.Extract(path, CancellationToken.None, out note);
+                byte[] b = DocText.TextFor(path, kind, CancellationToken.None, out note);
                 return b ?? Encoding.UTF8.GetBytes("(No text could be read from this file" + (note != null ? ": " + note : "") + ")");
             });
             t.ContinueWith(delegate(Task<byte[]> done)
@@ -346,7 +426,7 @@ namespace FindAnything.App
         private TextForm FormForWindow()
         {
             if (extracted) return TextForm.Bytes8;
-            switch (encodingBox.SelectedIndex)
+            switch (encodingIndex)
             {
                 case 1: case 3: return TextForm.Bytes8;
                 case 2: return TextForm.Utf16;
@@ -363,7 +443,7 @@ namespace FindAnything.App
             if (string.IsNullOrEmpty(findText.Text)) return null;
             try
             {
-                pattern = BytePattern.Compile(findText.Text, matchCase.Checked, opts.Wildcards, opts.WholeWord, windowForm);
+                pattern = BytePattern.Make(findText.Text, matchCase.Checked, opts.Wildcards, opts.WholeWord, windowForm, opts.Loose);
             }
             catch (ArgumentException ex) { findStatus.Text = ex.Message; }
             return pattern;
@@ -433,14 +513,14 @@ namespace FindAnything.App
 
         private bool Utf8Mode()
         {
-            return extracted || encodingBox.SelectedIndex == 0 || encodingBox.SelectedIndex == 1;
+            return extracted || encodingIndex == 0 || encodingIndex == 1;
         }
 
         private Encoding WindowEncoding()
         {
             if (windowForm == TextForm.Utf16) return Encoding.Unicode;
-            if (extracted || encodingBox.SelectedIndex == 1) return Encoding.UTF8;
-            if (encodingBox.SelectedIndex == 3) return Encoding.GetEncoding(1252);
+            if (extracted || encodingIndex == 1) return Encoding.UTF8;
+            if (encodingIndex == 3) return Encoding.GetEncoding(1252);
             // Auto: UTF-8 unless the bytes clearly are not.
             string probe = Encoding.UTF8.GetString(windowBytes, 0, Math.Min(windowBytes.Length, 65536));
             int bad = 0;
@@ -499,11 +579,13 @@ namespace FindAnything.App
 
             Native.Redraw(text, false);
             text.SelectAll();
-            text.SelectionBackColor = SystemColors.Window;
+            text.SelectionBackColor = Theme.Bg;
+            text.SelectionColor = TextColor;
             foreach (long[] m in windowMatches)
             {
                 text.Select((int)m[2], (int)m[3]);
-                text.SelectionBackColor = Color.FromArgb(255, 236, 120);
+                text.SelectionBackColor = MatchBack;
+                text.SelectionColor = MatchFore;
             }
             int cur = CurrentIndex();
             if (cur >= 0) PaintMatch(cur, true);
@@ -522,7 +604,8 @@ namespace FindAnything.App
         {
             long[] m = windowMatches[idx];
             text.Select((int)m[2], (int)m[3]);
-            text.SelectionBackColor = current ? Color.FromArgb(255, 150, 50) : Color.FromArgb(255, 236, 120);
+            text.SelectionBackColor = current ? Theme.Amber : MatchBack;
+            text.SelectionColor = current ? Theme.AmberInk : MatchFore;
             text.Select((int)m[2], 0);   // caret at the match; a live selection would paint over the highlight
         }
 
@@ -553,7 +636,7 @@ namespace FindAnything.App
             int idx = CurrentIndex();
             string where = windowMatches.Count == 0 ? "No matches on this page" :
                 windowMatches.Count + (windowMatches.Count >= MaxHighlights ? "+" : "") + " on this page";
-            if (idx >= 0) where = "Match " + (idx + 1) + " of " + where.Replace(" on this page", " here");
+            if (idx >= 0) where = "Match " + (idx + 1) + " of " + windowMatches.Count + (windowMatches.Count >= MaxHighlights ? "+" : "");
             findStatus.Text = where;
         }
 
@@ -564,23 +647,8 @@ namespace FindAnything.App
                 ? Fmt.Size(len) + (extracted ? " of text" : "")
                 : string.Format("{0} - {1} of {2}  ({3:0.0}%)", Fmt.Size(windowStart), Fmt.Size(windowEnd), Fmt.Size(len),
                     len == 0 ? 0 : 100.0 * windowStart / len);
-            if (!scrolling && len > 0)
-                position.Value = (int)Math.Min(10000, 10000.0 * windowStart / Math.Max(1, len - WindowBytes));
-        }
-
-        private void OnPositionScroll(object sender, ScrollEventArgs e)
-        {
-            if (e.Type == ScrollEventType.EndScroll) return;   // ThumbPosition already loaded the page
-            scrolling = e.Type == ScrollEventType.ThumbTrack;
-            long len = source == null ? 0 : source.Length;
-            if (len == 0) return;
-            long target = (long)((len - WindowBytes) * (Math.Min(10000, e.NewValue) / 10000.0));
-            if (e.Type == ScrollEventType.ThumbTrack)
-            {
-                windowInfo.Text = "Go to " + Fmt.Size(target) + " of " + Fmt.Size(len);
-                return;
-            }
-            LoadWindow(target, -1, false);
+            if (len > 0)
+                position.Value = Math.Min(1.0, windowStart / (double)Math.Max(1, len - WindowBytes));
         }
 
         // ------------------------------------------------------------------ next / previous

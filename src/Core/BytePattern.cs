@@ -50,6 +50,179 @@ namespace FindAnything.Core
 
         public readonly TextForm Form;
 
+        // ---- loose matching ("H6056" also finds "H-6056", "h 6056", "H6O56") ----
+        private sealed class LooseClass
+        {
+            public bool[] Set;       // which (low) bytes match
+            public int High = -1;    // UTF-16: the required high byte; -1 for single-byte text
+            public bool GapBefore;   // separators may sit between this and the previous character
+            public byte[][] Alts;    // multi-character look-alikes OCR produces ("1-1" for H, "rn" for m)
+        }
+
+        /// <summary>Separators a loose match skips between characters: up to LooseGap of them.</summary>
+        public const int LooseGap = 2;
+        private static readonly bool[] LooseSeparator = MakeSeparators();
+        private readonly LooseClass[] loose;
+
+        private static bool[] MakeSeparators()
+        {
+            bool[] s = new bool[256];
+            foreach (char c in " -_./\\:\t") s[c] = true;
+            return s;
+        }
+
+        private BytePattern(List<LooseClass> classes, TextForm form, bool wholeWord)
+        {
+            loose = classes.ToArray();
+            Form = form;
+            unit = form == TextForm.Utf16 ? 2 : 1;
+            this.wholeWord = wholeWord;
+            MaxLength = (loose.Length * 3 + (loose.Length - 1) * LooseGap) * unit;   // a character may be a 3-character look-alike
+        }
+
+        /// <summary>
+        /// A loose pattern: case and punctuation are ignored, up to two separators (space - _ . / \ :) may sit between
+        /// characters, and the look-alikes O/0 and I/l/1 count as the same. Wildcards are not used.
+        /// </summary>
+        public static BytePattern CompileLoose(string pattern, bool wholeWord, TextForm form)
+        {
+            if (pattern == null) pattern = "";
+            if (pattern.Length > MaxPatternChars)
+                throw new ArgumentException("The search text is longer than " + MaxPatternChars + " characters.");
+            List<LooseClass> classes = new List<LooseClass>();
+            foreach (char ch in pattern)
+            {
+                if (!char.IsLetterOrDigit(ch)) continue;
+                if (ch < 0x80)
+                {
+                    LooseClass c = new LooseClass();
+                    c.Set = new bool[256];
+                    c.GapBefore = true;
+                    if (form == TextForm.Utf16) c.High = 0;
+                    string same = Alike(ch);
+                    foreach (char a in same) c.Set[a] = true;
+                    string[] alts = AltSequences(ch);
+                    if (alts.Length > 0)
+                    {
+                        c.Alts = new byte[alts.Length][];
+                        for (int k = 0; k < alts.Length; k++) c.Alts[k] = Encoding.ASCII.GetBytes(alts[k]);
+                    }
+                    classes.Add(c);
+                }
+                else if (form == TextForm.Utf16)
+                {
+                    LooseClass c = new LooseClass();
+                    c.Set = new bool[256];
+                    c.GapBefore = true;
+                    c.Set[ch & 0xFF] = true;
+                    c.High = ch >> 8;
+                    classes.Add(c);
+                }
+                else
+                {
+                    byte[] bytes = Encoding.UTF8.GetBytes(ch.ToString());
+                    for (int i = 0; i < bytes.Length; i++)
+                    {
+                        LooseClass c = new LooseClass();
+                        c.Set = new bool[256];
+                        c.Set[bytes[i]] = true;
+                        c.GapBefore = i == 0;
+                        classes.Add(c);
+                    }
+                }
+            }
+            if (classes.Count == 0) throw new ArgumentException("Type some letters or digits to search for.");
+            return new BytePattern(classes, form, wholeWord);
+        }
+
+        /// <summary>Compile or CompileLoose, by flag.</summary>
+        public static BytePattern Make(string pattern, bool caseSensitive, bool wildcards, bool wholeWord, TextForm form, bool looseMatch)
+        {
+            return looseMatch ? CompileLoose(pattern, wholeWord, form) : Compile(pattern, caseSensitive, wildcards, wholeWord, form);
+        }
+
+        /// <summary>Characters treated as the same in a loose match.</summary>
+        private static string Alike(char c)
+        {
+            char lower = char.ToLowerInvariant(c);
+            switch (lower)
+            {
+                case '0': case 'o': return "0oO";
+                case '1': case 'i': case 'l': return "1iIlL|";
+                case '5': case 's': return "5sS";
+                case '8': case 'b': return "8bB";
+                case '2': case 'z': return "2zZ";
+            }
+            return lower.ToString() + char.ToUpperInvariant(lower);
+        }
+
+        /// <summary>Multi-character look-alikes that OCR produces for a character.</summary>
+        private static string[] AltSequences(char c)
+        {
+            switch (char.ToLowerInvariant(c))
+            {
+                case 'h': return new[] { "1-1", "I-I", "l-l", "1-I", "I-1", "l-1", "1-l", "|-|" };
+                case 'm': return new[] { "rn" };
+                case 'w': return new[] { "vv" };
+                case 'd': return new[] { "cl" };
+            }
+            return new string[0];
+        }
+
+        /// <summary>Length in bytes of class c matched at pos, or 0.</summary>
+        private int MatchClass(LooseClass c, byte[] buf, int pos, int dataEnd)
+        {
+            if (pos + unit <= dataEnd && c.Set[buf[pos]] && (unit == 1 || buf[pos + 1] == c.High)) return unit;
+            if (c.Alts == null) return 0;
+            foreach (byte[] alt in c.Alts)
+            {
+                if (pos + alt.Length * unit > dataEnd) continue;
+                bool ok = true;
+                for (int i = 0; i < alt.Length && ok; i++)
+                {
+                    int p = pos + i * unit;
+                    byte b = buf[p];
+                    if (b >= 'A' && b <= 'Z') b = (byte)(b + 32);
+                    byte a = alt[i];
+                    if (a >= 'A' && a <= 'Z') a = (byte)(a + 32);
+                    if (b != a || (unit == 2 && buf[p + 1] != 0)) ok = false;
+                }
+                if (ok) return alt.Length * unit;
+            }
+            return 0;
+        }
+
+        private int FindLoose(byte[] buf, int from, int startLimit, int dataEnd, out int end)
+        {
+            end = -1;
+            for (int s = from; s < startLimit; s++)
+            {
+                int len0 = MatchClass(loose[0], buf, s, dataEnd);
+                if (len0 == 0) continue;
+                int pos = s + len0;
+                bool ok = true;
+                for (int k = 1; k < loose.Length && ok; k++)
+                {
+                    LooseClass c = loose[k];
+                    if (c.GapBefore)
+                        for (int g = 0; g < LooseGap && pos + unit <= dataEnd && LooseSeparator[buf[pos]] && (unit == 1 || buf[pos + 1] == 0); g++)
+                            pos += unit;
+                    int len = MatchClass(c, buf, pos, dataEnd);
+                    if (len == 0) ok = false;
+                    else pos += len;
+                }
+                if (!ok) continue;
+                if (wholeWord)
+                {
+                    if (s - unit >= 0 && IsWordByte(buf[s - unit])) continue;
+                    if (pos < dataEnd && IsWordByte(buf[pos])) continue;
+                }
+                end = pos;
+                return s;
+            }
+            return -1;
+        }
+
         private BytePattern(List<int[]> segs, bool caseSensitive, TextForm form, bool wholeWord)
         {
             segments = segs.ToArray();
@@ -170,6 +343,7 @@ namespace FindAnything.Core
             if (startLimit > dataEnd) startLimit = dataEnd;
             if (from < 0) from = 0;
             if (from >= startLimit) return -1;
+            if (loose != null) return FindLoose(buf, from, startLimit, dataEnd, out end);
 
             if (anchor == null)
             {
@@ -233,6 +407,23 @@ namespace FindAnything.Core
             return -1;
         }
 
+        /// <summary>
+        /// Finds the first match inside a short string (a preview line) and returns it in characters.
+        /// Only for Bytes8 patterns; the string is matched as UTF-8.
+        /// </summary>
+        public bool FindInString(string s, out int charStart, out int charLength)
+        {
+            charStart = charLength = 0;
+            if (string.IsNullOrEmpty(s)) return false;
+            byte[] b = Encoding.UTF8.GetBytes(s);
+            int end;
+            int st = Find(b, 0, b.Length, b.Length, out end);
+            if (st < 0) return false;
+            charStart = Encoding.UTF8.GetCharCount(b, 0, st);
+            charLength = Encoding.UTF8.GetCharCount(b, st, end - st);
+            return charLength > 0 && charStart + charLength <= s.Length;
+        }
+
         private bool TryComplete(byte[] buf, int s, int dataEnd, out int end)
         {
             end = -1;
@@ -284,9 +475,10 @@ namespace FindAnything.Core
         private readonly BytePattern pattern;
         private readonly bool caseSensitive;
 
-        public NameMatcher(string text, bool caseSensitive, bool wildcards, bool wholeWord)
+        public NameMatcher(string text, bool caseSensitive, bool wildcards, bool wholeWord, bool looseMatch = false)
         {
             this.caseSensitive = caseSensitive;
+            if (looseMatch) { pattern = BytePattern.CompileLoose(text, wholeWord, TextForm.Bytes8); this.caseSensitive = true; return; }
             // Lower-case both sides here so names get full Unicode case folding, not just A-Z.
             pattern = BytePattern.Compile(caseSensitive ? text : text.ToLowerInvariant(), true, wildcards, wholeWord, TextForm.Bytes8);
         }

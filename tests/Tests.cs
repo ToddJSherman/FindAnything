@@ -21,6 +21,14 @@ internal static class Tests
         LongPath.EnableInProcess();
 
         if (args.Length >= 3 && args[0] == "huge") return Huge(args[1], double.Parse(args[2]));
+        if (args.Length >= 2 && args[0] == "ocr")
+        {
+            // tests.exe ocr <image or pdf>: what the app's OCR reads (no cache)
+            Ocr.ClearCache();
+            OcrText t = args[1].EndsWith(".pdf", StringComparison.OrdinalIgnoreCase) ? Ocr.ReadPdf(args[1], None) : Ocr.ReadImage(args[1]);
+            Console.WriteLine(t.Text);
+            return 0;
+        }
 
         string work = Path.Combine(Path.GetTempPath(), "FindAnythingTests");
         if (Directory.Exists(work)) Directory.Delete(LongPath.Add(work), true);
@@ -34,6 +42,10 @@ internal static class Tests
         if (args.Length >= 1) GeneratedPdfTests(args[0]);
         PrintToPdfTest(work);
         JobTests(work);
+        LooseTests();
+        SecretTests(work);
+        OcrTests(work, args.Length >= 1 ? args[0] : null);
+        DriveTests(work);
 
         Console.WriteLine();
         Console.WriteLine("{0} passed, {1} failed", passed, failed);
@@ -257,6 +269,11 @@ internal static class Tests
             string note;
             byte[] bytes = DocText.Extract(f, None, out note);
             string text = bytes == null ? "" : Encoding.UTF8.GetString(bytes);
+            if (name.StartsWith("scanned"))
+            {
+                Check("pdf " + name + " reports no text layer", note != null && note.Contains("no text layer"), note);
+                continue;
+            }
             if (name.StartsWith("locked"))
             {
                 Check("pdf " + name + " reports password", note != null && note.Contains("password"), note);
@@ -382,6 +399,226 @@ internal static class Tests
         List<string> n = new List<string>();
         foreach (FileHit h in hits) n.Add(h.Name);
         return string.Join(" ", n.ToArray());
+    }
+
+    // ------------------------------------------------------------------ loose matching
+
+    private static FileHit ScanLoose(string text, string pattern, bool utf16 = false)
+    {
+        Scanner s = new Scanner(pattern, false, true, false, true, true);
+        FileHit h = new FileHit();
+        byte[] data = utf16 ? Encoding.Unicode.GetBytes(text) : Encoding.UTF8.GetBytes(text);
+        using (MemoryStream ms = new MemoryStream(data)) s.Scan(ms, s.NewBuffer(), h, None, true);
+        return h;
+    }
+
+    private static void LooseTests()
+    {
+        Check("loose: dash", ScanLoose("model H-6056 here", "H6056").ContentHits == 1);
+        Check("loose: space+case", ScanLoose("model h 6056 here", "H6056").ContentHits == 1);
+        Check("loose: O for 0", ScanLoose("model H6O56 here", "H6056").ContentHits == 1);
+        Check("loose: l for 1", ScanLoose("SKU Al-1B", "A11B").ContentHits == 1);
+        Check("loose: pattern punctuation ignored", ScanLoose("H6056", "H-60 56").ContentHits == 1);
+        Check("loose: different digit rejected", ScanLoose("H6066 H6O66", "H6056").ContentHits == 0);
+        Check("loose: too many separators rejected", ScanLoose("H - - 6056", "H6056").ContentHits == 0);
+        Check("loose: utf16", ScanLoose("x H-6O56 y", "h6056", true).ContentHits == 1);
+        int s, l;
+        BytePattern p = BytePattern.CompileLoose("H6056", false, TextForm.Bytes8);
+        Check("loose: preview span", p.FindInString("Model: Govee H-6056 bars", out s, out l) && s == 13 && l == 6, s + "/" + l);
+        Check("loose: names", new NameMatcher("h6056", false, true, false, true).IsMatch("Govee H-6056 manual.pdf"));
+        Check("loose: OCR reads H as 1-1", ScanLoose("Model: 1-16056", "H6056").ContentHits == 1);
+        Check("loose: OCR splits a word", ScanLoose("Gove e Flow", "Govee").ContentHits == 1);
+        Check("loose: OCR rn for m", ScanLoose("the rnanual", "manual").ContentHits == 1);
+        Check("loose: 5 for S", ScanLoose("serial 5N-1234", "SN1234").ContentHits == 1);
+    }
+
+    // ------------------------------------------------------------------ keys and secrets
+
+    private static List<SecretSpan> Secrets(string line)
+    {
+        return SecretDetector.Scan(line, new SecretOptions());
+    }
+
+    private static string Found(string line)
+    {
+        List<string> parts = new List<string>();
+        foreach (SecretSpan s in Secrets(line)) parts.Add(s.Kind + "=" + line.Substring(s.Start, s.Length));
+        return string.Join(" | ", parts.ToArray());
+    }
+
+    private static void SecretTests(string work)
+    {
+        string f;
+        f = Found("Windows 10 Pro: W269N-WFGWX-YVC9B-4J6C9-T83GX");
+        Check("key: windows 5x5", f == "ProductKey=W269N-WFGWX-YVC9B-4J6C9-T83GX", f);
+        f = Found("Steam key AAB3C-DD4EF-GH5IJ for the game");
+        Check("key: steam 3x5", f == "ProductKey=AAB3C-DD4EF-GH5IJ", f);
+        f = Found("Serial: 1234-5678-9012-3456-7890-1234");
+        Check("serial: labelled digits", f == "Serial=1234-5678-9012-3456-7890-1234", f);
+        f = Found("Photoshop license key = ABCD-1234-EFGH-5678");
+        Check("key: labelled license", f == "LicenseKey=ABCD-1234-EFGH-5678", f);
+        f = Found("Router wifi password is Pur3Monk3yDishwasher!");
+        Check("password: 'is' phrasing", f == "Password=Pur3Monk3yDishwasher!", f);
+        f = Found("  \"password\": \"hunter22\",");
+        Check("password: json", f == "Password=hunter22", f);
+        f = Found("Garage PIN: 4417");
+        Check("pin", f == "Pin=4417", f);
+        f = Found("S/N: 5CG1234XYZ");
+        Check("serial: s/n", f == "Serial=5CG1234XYZ", f);
+        f = Found("export GITHUB_TOKEN=" + "gh" + "p_" + "0123456789abcdefghij" + "ABCDEFGHIJ012345");   // built in pieces so no scanner mistakes it for a real token
+        Check("token: github", f.StartsWith("ApiToken=ghp_0123456789"), f);
+        f = Found("aws_access_key_id = AKIAIOSFODNN7EXAMPLE");
+        Check("token: aws", f == "ApiToken=AKIAIOSFODNN7EXAMPLE", f);
+        f = Found("-----BEGIN OPENSSH PRIVATE KEY-----");
+        Check("private key block", f.StartsWith("PrivateKey=-----BEGIN"), f);
+        f = Found("Visa 4111 1111 1111 1111 exp 12/29");
+        Check("card: luhn valid", f == "Card=4111 1111 1111 1111", f);
+        f = Found("SSN 123-45-6789 on file");
+        Check("ssn", f == "Ssn=123-45-6789", f);
+
+        // look-alikes that must not be reported
+        foreach (string clean in new[]
+        {
+            "Meeting on 2026-10-11 at 10:30", "GUID 3F2504E0-4F89-11D3-9A0C-0305E82C3301", "Call 555-123-4567",
+            "See https://example.com:8080/path", "Order 4111 1111 1111 1112 (bad checksum)", "password = ${DB_PASSWORD}",
+            "password: <your password>", "key: none", "SSN 000-12-3456", "The key was under the mat", "ISBN 978-0-306-40615-7",
+            "Version 10.0.26100.1742", "pin it to the taskbar"
+        })
+            Check("not a secret: " + clean, Secrets(clean).Count == 0, Found(clean));
+
+        // a whole job in keys mode, over a few stash files
+        string root = Path.Combine(work, "keys");
+        Directory.CreateDirectory(Path.Combine(root, "Downloads", "Software"));
+        File.WriteAllText(Path.Combine(root, "Downloads", "Software", "readme.txt"),
+            "Thanks for buying!\r\nYour license key: QWERT-12345-ASDFG-67890-ZXCVB\r\nKeep it safe.\r\n");
+        File.WriteAllText(Path.Combine(root, "notes.txt"), "office 2021 key BBBBB-22222-CCCCC-33333-DDDDD\r\nwifi password is correct-horse-battery\r\n");
+        File.WriteAllBytes(Path.Combine(root, "program.exe"), Concat(new byte[] { 0x4D, 0x5A, 0, 0 }, Encoding.ASCII.GetBytes("password: notreal1234"), new byte[100]));
+        File.Copy(Path.Combine(work, "letter.docx"), Path.Combine(root, "letter.docx"));
+        SearchSettings s = new SearchSettings();
+        s.Roots.Add(root);
+        s.SecretsMode = true;
+        SearchJob job = new SearchJob(s);
+        job.Run(None);
+        List<string> rows = new List<string>();
+        foreach (FileHit h in job.Hits) rows.Add(h.Name + ":" + h.Secret.Kind + ":" + h.Secret.Value);
+        rows.Sort(StringComparer.Ordinal);
+        string all = string.Join(" | ", rows.ToArray());
+        Check("keys job: finds the stashed keys", all == "notes.txt:Password:correct-horse-battery | notes.txt:ProductKey:BBBBB-22222-CCCCC-33333-DDDDD | readme.txt:LicenseKey:QWERT-12345-ASDFG-67890-ZXCVB", all);
+
+        s.Text = "office";
+        job = new SearchJob(s);
+        job.Run(None);
+        Check("keys job: filter text", job.Hits.Count == 1);
+    }
+
+    // ------------------------------------------------------------------ OCR
+
+    private static void OcrTests(string work, string pdfFolder)
+    {
+        if (!Ocr.Available) { Console.WriteLine("skip  Windows OCR has no language installed"); return; }
+        Ocr.ClearCache();
+        string png = Path.Combine(work, "label.png");
+        using (Bitmap b = new Bitmap(1000, 260))
+        using (Graphics g = Graphics.FromImage(b))
+        {
+            g.Clear(Color.White);
+            using (Font f = new Font("Arial", 40)) g.DrawString("Govee H6056 Flow Plus", f, Brushes.Black, 30, 30);
+            using (Font f = new Font("Consolas", 26)) g.DrawString("Serial: 7KQ2P-XM4TR-99B3D", f, Brushes.Black, 30, 130);
+            b.Save(png);
+        }
+        // Off (the default): nothing is written to disk.
+        Ocr.UseCache = false;
+        Ocr.ReadImage(png);
+        Check("ocr: cache off stores nothing", !Ocr.HasCache);
+
+        Ocr.UseCache = true;
+        Stopwatch sw = Stopwatch.StartNew();
+        OcrText t = Ocr.ReadImage(png);
+        long first = sw.ElapsedMilliseconds;
+        // Windows' OCR sometimes reads this H as "1-1" (a known OCR confusion), so check the parts it reads reliably.
+        Check("ocr: image text", t.Text.Contains("Govee") && t.Text.Contains("6056 Flow") && t.Text.Contains("7KQ2P-XM4TR-99B3D"), t.Text);
+        Check("ocr: word boxes", t.Words.Count >= 5 && t.Words[0].W > 0 && t.ImageWidth == 1000, t.Words.Count.ToString());
+        sw.Restart();
+        OcrText again = Ocr.ReadImage(png);
+        Check("ocr: cache hit is fast and equal", again.Text == t.Text && sw.ElapsedMilliseconds < first, sw.ElapsedMilliseconds + " vs " + first + " ms");
+        Check("ocr: cache on stores text", Ocr.HasCache);
+        Ocr.ClearCache();
+        Ocr.UseCache = false;
+
+        string root = Path.Combine(work, "pics");
+        Directory.CreateDirectory(root);
+        File.Copy(png, Path.Combine(root, "IMG_2041.png"));
+        SearchSettings s = new SearchSettings();
+        s.Roots.Add(root);
+        s.Text = "6056 Flow";
+        s.Ocr = true;
+        List<FileHit> hits = RunJob(s);
+        Check("ocr: job finds text in a picture", hits.Count == 1 && hits[0].Source == "OCR", Names(hits));
+        s.Text = "H6056";
+        s.Loose = true;
+        Check("ocr + loose: model number despite the OCR misread", RunJob(s).Count == 1);
+        s.Loose = false;
+        s.Text = "6056 Flow";
+        s.Ocr = false;
+        Check("ocr: off finds nothing", RunJob(s).Count == 0);
+
+        s.SecretsMode = true;
+        s.Ocr = true;
+        s.Text = "";
+        SearchJob job = new SearchJob(s);
+        job.Run(None);
+        bool serial = false;
+        foreach (FileHit h in job.Hits) if (h.Secret.Value.Contains("7KQ2P")) serial = true;
+        Check("ocr: keys mode reads the serial off the picture", serial);
+
+        if (pdfFolder != null && File.Exists(Path.Combine(pdfFolder, "scanned.pdf")))
+        {
+            string scanned = Path.Combine(work, "scanned.pdf");
+            File.Copy(Path.Combine(pdfFolder, "scanned.pdf"), scanned, true);
+            OcrText pt = Ocr.ReadPdf(scanned, None);
+            Check("ocr: scanned pdf", pt.Text.Contains("H6056"), pt.Text);
+        }
+    }
+
+    // ------------------------------------------------------------------ drive check (on a disk image file)
+
+    private static void DriveTests(string work)
+    {
+        string img = Path.Combine(work, "disk.img");
+        byte[] disk = new byte[24 << 20];                       // 24 MB, all zero
+        byte[] a = Encoding.ASCII.GetBytes("old owner: jane@example.com");
+        Buffer.BlockCopy(a, 0, disk, 5 << 20, a.Length);        // data in one sector at 5 MB
+        byte[] b = Encoding.Unicode.GetBytes("jane@example.com");
+        Buffer.BlockCopy(b, 0, disk, (8 << 20) - 6, b.Length);  // straddles the 8 MB chunk edge, UTF-16
+        File.WriteAllBytes(img, disk);
+
+        BytePattern p8 = BytePattern.Compile("jane@example.com", false, true, false, TextForm.Bytes8);
+        BytePattern p16 = BytePattern.Compile("jane@example.com", false, true, false, TextForm.Utf16);
+        DriveScan scan = new DriveScan(p8, p16);
+        using (FileStream fs = File.OpenRead(img))
+        using (AlignedStream s = new AlignedStream(fs, fs.Length))
+            scan.Run(s, None);
+        Check("drive: data sectors counted", scan.DataSectors == 3, scan.DataSectors.ToString());   // 1 + 2 (straddle)
+        Check("drive: first data", scan.FirstData == (5 << 20), scan.FirstData.ToString());
+        Check("drive: both hits with offsets", scan.Hits.Count == 2 && scan.Hits[0].Offset == (5 << 20) + 11 && scan.Hits[1].Offset == (8 << 20) - 6,
+            scan.Hits.Count > 0 ? scan.Hits[0].Offset + "," + (scan.Hits.Count > 1 ? scan.Hits[1].Offset.ToString() : "") : "none");
+
+        using (FileStream fs = File.OpenRead(img))
+        using (AlignedStream s = new AlignedStream(fs, fs.Length))
+        {
+            byte[] r = new byte[11];
+            s.Position = (5 << 20) + 11;
+            int n = s.Read(r, 0, 11);
+            Check("drive: aligned stream random read", n == 11 && Encoding.ASCII.GetString(r) == "jane@exampl");
+        }
+
+        try
+        {
+            List<DiskInfo> disks = RawDisk.List();
+            Check("drive: lists physical disks", disks.Count > 0 && disks[0].Size > 0, disks.Count.ToString());
+            Console.WriteLine("info  disks: " + string.Join("; ", disks.ConvertAll(delegate(DiskInfo d) { return d.ToString(); }).ToArray()));
+        }
+        catch (Exception ex) { Check("drive: lists physical disks", false, ex.Message); }
     }
 
     // ------------------------------------------------------------------ huge file

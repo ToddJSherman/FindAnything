@@ -5,6 +5,57 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [2026.10.11.6] - 2026-10-11
+
+### Added
+- **Find keys** mode: finds product keys, license keys, serial numbers, passwords, PINs and door/alarm codes, API
+  tokens (GitHub, AWS, Google, Stripe, Slack, OpenAI, Anthropic, GitLab, npm, JWT), private key files, card numbers
+  (checksum-valid) and US Social Security numbers. It needs no search text, shows one row per key with its kind, has
+  "Copy the key", and an optional filter word. The detectors are plain character checks, and dates, GUIDs, phone
+  numbers, URLs and placeholders are rejected (tested).
+- **Pictures (OCR)**: text in photos, screenshots and scanned PDFs, read by Windows' built-in OCR (offline) and cached
+  per file. A new picture viewer boxes the match on the photo and shows the recognised text.
+- **Loose** matching: ignores spaces, dashes and case; O=0, I=l=1, S=5, B=8, Z=2; and OCR's misreads ("1-1" for H,
+  "rn" for m, "vv" for w, "cl" for d).
+- **Drive check** mode: reads a whole physical drive, read-only, reports how much of it still holds data, and finds a
+  text anywhere on it, deleted files included. It offers to restart as administrator. Matches open in the viewer
+  straight from the drive.
+- Mode tabs (Search text / Find keys / Drive check), and the `--keys` and `--drive-check` start options.
+
+### Changed
+- Nothing typed is saved any more: no last search, no recent searches, no remembered folders. History written by
+  earlier versions is erased from the settings file the next time the app starts. Toggles and filters are still
+  remembered.
+- The OCR cache is now opt-in: a **Remember OCR text** toggle, off by default, with a tooltip on the trade-off
+  (faster repeat searches against storing the text of your pictures). While it is off nothing is written, and turning it
+  off deletes what was cached.
+
+### Fixed
+- A double-click in the results now opens the row that was clicked, even if the mouse moved off it.
+
+## [2026.10.11.5] - 2026-10-11
+
+### Changed
+- New look across the app, the viewer, the installer and the About box: a dark slate theme with an amber accent,
+  matching the icon.
+  - A large search field with a focus glow and an amber Search button that becomes Stop.
+  - Toggle chips instead of checkboxes, and a Filters panel that folds away.
+  - The results list shows a colour badge per file type, the name over its folder, the first match with the hit
+    highlighted, and a hit-count pill.
+  - A thin overlay scrollbar, a status bar with an animated progress line, dark menus and tooltips, and a dark
+    title bar.
+- The design is an HTML/CSS mockup (`design/ui/`). `tools/make-skin.ps1` renders its controls into PNG sprites that the
+  app draws 9-sliced, so it stays sharp at any display scaling.
+- Credits now read "Todd J Sherman" (LICENSE, About box, installer, file details).
+- README screenshots.
+
+## [2026.10.11.4] - 2026-10-11
+
+### Fixed
+- Ctrl+Alt+F stopped working after updating or reinstalling. The installer deleted and recreated the Start menu
+  shortcut, and Explorer dropped the hotkey on the delete without picking up the new file. The installer now saves
+  over the existing shortcut and tells Explorer it changed.
+
 ## [2026.10.11.3] - 2026-10-11
 
 First public release, under the MIT License.

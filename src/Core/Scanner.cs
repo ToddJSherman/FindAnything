@@ -27,6 +27,9 @@ namespace FindAnything.Core
         /// <summary>Where the text came from: "" raw file bytes, or "PDF" / "DOCX" / ... extracted text.</summary>
         public string Source = "";
 
+        /// <summary>Keys mode: the key, serial, password or token this row is about.</summary>
+        public SecretFinding Secret;
+
         public string HitsText
         {
             get { return ContentHits == 0 ? "" : (HitsCapped ? ContentHits + "+" : ContentHits.ToString()); }
@@ -57,10 +60,10 @@ namespace FindAnything.Core
         private readonly BytePattern p16;   // null when UTF-16 search is off
         private readonly int overlap;
 
-        public Scanner(string text, bool caseSensitive, bool wildcards, bool wholeWord, bool utf16)
+        public Scanner(string text, bool caseSensitive, bool wildcards, bool wholeWord, bool utf16, bool looseMatch = false)
         {
-            p8 = BytePattern.Compile(text, caseSensitive, wildcards, wholeWord, TextForm.Bytes8);
-            if (utf16) p16 = BytePattern.Compile(text, caseSensitive, wildcards, wholeWord, TextForm.Utf16);
+            p8 = BytePattern.Make(text, caseSensitive, wildcards, wholeWord, TextForm.Bytes8, looseMatch);
+            if (utf16) p16 = BytePattern.Make(text, caseSensitive, wildcards, wholeWord, TextForm.Utf16, looseMatch);
             overlap = Math.Max(p8.MaxLength, p16 == null ? 0 : p16.MaxLength) + 2;
         }
 

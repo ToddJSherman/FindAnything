@@ -75,6 +75,8 @@ namespace FindAnything.App
         }
 
         public void Set(string key, bool value) { Set(key, value ? "1" : "0"); }
+
+        public void Remove(string key) { values.Remove(key); }
         public void Set(string key, long value) { Set(key, value.ToString()); }
 
         public List<string> GetList(string key)

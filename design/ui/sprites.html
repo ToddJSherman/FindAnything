@@ -1,0 +1,70 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Find Anything - skin sprites</title>
+<!--
+  Every control state of the skin, empty (the app draws text and icons itself), on a transparent page.
+  Each sprite sits in a 400x120 cell at (col*400 + 40, row*120 + 30). tools\make-skin.ps1 screenshots this page
+  at 2x and cuts each sprite out with its shadow padding; src\App\Skin.cs holds the same sizes for 9-slice drawing.
+-->
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { width: 1600px; height: 960px; background: transparent; overflow: hidden; }
+  .s { position: absolute; }
+  /* field family */
+  .find      { width: 300px; height: 54px; border-radius: 12px; border: 1px solid #2E4257; background: linear-gradient(180deg, #172331, #141E29); box-shadow: inset 0 1px 0 rgba(255,255,255,.04); }
+  .find.on   { border-color: rgba(255,176,32,.60); box-shadow: 0 0 0 4px rgba(255,176,32,.12), inset 0 1px 0 rgba(255,255,255,.04); }
+  .field     { width: 300px; height: 46px; border-radius: 12px; border: 1px solid #2E4257; background: #141E29; box-shadow: inset 0 1px 0 rgba(255,255,255,.03); }
+  .field.hov { border-color: #3D5670; }
+  .field.on  { border-color: rgba(255,176,32,.55); box-shadow: 0 0 0 3px rgba(255,176,32,.10); }
+  .mini      { width: 200px; height: 34px; border-radius: 9px; border: 1px solid #243445; background: #141E29; }
+  .mini.on   { border-color: rgba(255,176,32,.55); box-shadow: 0 0 0 3px rgba(255,176,32,.10); }
+  /* buttons */
+  .pri       { width: 200px; height: 54px; border-radius: 12px; background: linear-gradient(180deg, #FFC64F 0%, #FFAE1A 100%); box-shadow: 0 5px 12px rgba(255,170,20,.30), inset 0 1px 0 rgba(255,255,255,.45); }
+  .pri.hov   { background: linear-gradient(180deg, #FFD06A 0%, #FFB52E 100%); box-shadow: 0 6px 14px rgba(255,170,20,.40), inset 0 1px 0 rgba(255,255,255,.55); }
+  .pri.down  { background: linear-gradient(180deg, #F2A512 0%, #FFB627 100%); box-shadow: 0 2px 6px rgba(255,170,20,.25), inset 0 1px 2px rgba(0,0,0,.20); }
+  .pri.off   { background: #2A3646; box-shadow: none; }
+  .sec       { width: 160px; height: 46px; border-radius: 12px; border: 1px solid #2E4257; background: #1A2633; }
+  .sec.hov   { border-color: #3D5670; background: #1F2D3C; }
+  .sec.down  { border-color: #3D5670; background: #16212D; }
+  /* chips */
+  .chip      { width: 120px; height: 32px; border-radius: 16px; border: 1px solid #243445; background: #141E29; }
+  .chip.hov  { border-color: #3D5670; background: #172330; }
+  .chip.on   { border-color: rgba(255,176,32,.45); background: #2A2416; }
+  .chip.onh  { border-color: rgba(255,176,32,.70); background: #33291A; }
+  /* window backgrounds */
+  .hero      { width: 1180px; height: 300px; background:
+                 radial-gradient(900px 220px at 12% -40%, rgba(255,176,32,.16), transparent 70%),
+                 radial-gradient(700px 260px at 100% -60%, rgba(64,140,255,.10), transparent 70%),
+                 linear-gradient(180deg, #111A24 0%, #0B1118 100%); }
+</style>
+</head>
+<body>
+  <!-- row 0 -->
+  <div class="s find"       style="left:40px;   top:30px"></div>
+  <div class="s find on"    style="left:440px;  top:30px"></div>
+  <div class="s field"      style="left:840px;  top:30px"></div>
+  <div class="s field hov"  style="left:1240px; top:30px"></div>
+  <!-- row 1 -->
+  <div class="s field on"   style="left:40px;   top:150px"></div>
+  <div class="s mini"       style="left:440px;  top:150px"></div>
+  <div class="s mini on"    style="left:840px;  top:150px"></div>
+  <div class="s pri off"    style="left:1240px; top:150px"></div>
+  <!-- row 2 -->
+  <div class="s pri"        style="left:40px;   top:270px"></div>
+  <div class="s pri hov"    style="left:440px;  top:270px"></div>
+  <div class="s pri down"   style="left:840px;  top:270px"></div>
+  <div class="s sec"        style="left:1240px; top:270px"></div>
+  <!-- row 3 -->
+  <div class="s sec hov"    style="left:40px;   top:390px"></div>
+  <div class="s sec down"   style="left:440px;  top:390px"></div>
+  <div class="s chip"       style="left:840px;  top:390px"></div>
+  <div class="s chip hov"   style="left:1240px; top:390px"></div>
+  <!-- row 4 -->
+  <div class="s chip on"    style="left:40px;   top:510px"></div>
+  <div class="s chip onh"   style="left:440px;  top:510px"></div>
+  <!-- rows 5-7: hero background -->
+  <div class="s hero"       style="left:0px;    top:630px"></div>
+</body>
+</html>
